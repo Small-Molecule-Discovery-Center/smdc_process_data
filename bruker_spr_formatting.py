@@ -60,7 +60,7 @@ today = date.today().strftime("%Y%m%d")
 
 
 ###############################################################################
-def create_spr_files(input='test.txt'):
+def create_nine_point_files(input='test.txt'):
     print(f"Processing {input}...\n")
 
     # get dmso info
