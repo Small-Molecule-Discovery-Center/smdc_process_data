@@ -45,8 +45,52 @@ def preprocess_pampa(infile=''):
     # gutcheck - is the number of samples 1 less than before, since all the 'nolabs' are gone?
     print('Unique samples post:', pampa.Sample.nunique())
     
-    # look at new data
-    pampa.head(12)
+    # rename other columns
+    pampa=pampa.rename(columns={
+        'Sample':'SMDC_ID',
+        'Pe Well':'Destination well',
+    })
+
+    # add additional plate map columns
+    i=0
+    if i==0:
+      try:
+        pampa[['SMDC_ID','Lot']]=pampa.SMDC_ID.astype(str).str.split('-', expand=True)
+      except:
+        pampa['Lot']=np.nan
+      pampa.Lot=pampa.Lot.astype(float)
+      i=1
+    
+    pampa['Source plate']=source_plate
+    pampa['Source well']=np.nan
+    pampa['Destination plate']=destination_plate
+    pampa['[compound] uM']=donor_well_conc
+
+    # rename controls to SMDC_IDs and add lots
+    ctrl_dict={
+        'Theophylline':254802,
+        "Verapamil":131810,
+        "Corticosterone":1076478,
+        'DMSO':np.nan
+    }
+    ctrl_lot_dict={
+        'Theophylline':2,
+        "Verapamil":13,
+        "Corticosterone":2,
+    }
+    
+    pampa.loc[pampa.SMDC_ID=='Theophylline', '[compound] uM']=250
+    
+    for smdc in ctrl_lot_dict:
+      pampa.loc[pampa.SMDC_ID==smdc, 'Lot']=ctrl_lot_dict[smdc]
+    pampa=pampa.replace({'SMDC_ID':ctrl_dict})
+    
+    pampa.SMDC_ID=pampa.SMDC_ID.astype(float)
+    
+    # fix Pe and notes column
+    pampa.loc[pampa['P(10-6cm/s)']=='equilibrated','BCS code']='HIGH_EQ'
+    pampa['P(10-6cm/s)']=pampa['P(10-6cm/s)'].replace('undetected','').replace('equilibrated','')
+
     
     # save new data as csv
     pampa.to_csv(outfile)
