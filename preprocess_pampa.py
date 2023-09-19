@@ -1,6 +1,10 @@
 # preprocess pampa explorer data for upload to SMDC HiTS
 # created 20230317 by @paulsonak amanda.paulson@ucsf.edu
 
+import pandas as pd
+import numpy as np
+import os
+
 def preprocess_pampa(infile=''):
     destination_plate=infile.split('/')[-1].replace('_results.xlsx','').replace('_results.xls','').replace('_Results.xlsx','').replace('_Results.xls', '').replace('_Results_processed.csv','')
     print('Destination plate:', destination_plate)
