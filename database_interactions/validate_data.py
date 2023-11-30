@@ -1,6 +1,6 @@
 ### helper functions to validate that a column to be inserted the db is correct and fix if not
 # import pandas as pd
-
+# import numpy as np
 
 def validate_column(valid_values=[], test_values=[]):
     """ A function to check if the values submitted are actually in the list of valid options.
@@ -24,6 +24,8 @@ def validate_column(valid_values=[], test_values=[]):
             mismatch_values[v]=list(set(poss))
     if len(mismatch_values)>0:
         for value, matches in mismatch_values.items():
+            if value=='nan':
+                continue
             print(f"{value} not in list, closest matches are:")
             for i, match in enumerate(matches):
                 print(i, match)
