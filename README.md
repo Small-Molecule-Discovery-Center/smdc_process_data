@@ -7,6 +7,9 @@ A set of functions to preprocess various kinds of raw data for upload or further
 ### pION PAMPA preprocessing:
 [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Small-Molecule-Discovery-Center/smdc_preprocess_data/blob/main/preprocess_pampa.ipynb)
 
+### AVIDD Disulfide Tethering Match IDs:
+[![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Small-Molecule-Discovery-Center/smdc_preprocess_data/blob/main/AVIDD_match_disulfides.ipynb)
+
 #### database_interactions
 Notebooks for querying the database, making plate maps and entering new data
 
