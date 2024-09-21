@@ -1,6 +1,7 @@
 ### helper functions to validate that a column to be inserted the db is correct and fix if not
 import pandas as pd
 pd.options.mode.copy_on_write = True
+pd.set_option('future.no_silent_downcasting', True)
 import os
 import numpy as np
 from mysql_cnx import create_mysql_cnx
@@ -203,17 +204,24 @@ def clean_reg_files(df, today=None):
     if today is None:
         today=date.today().strftime("%Y%m%d")
     df.loc[:,'date_prepared']=pd.to_datetime(df.date_prepared.astype(str), format="mixed")
-    df.loc[:,'notebook_name']=[str(x).replace('.0','') for x in df.notebook_name]
+    df.notebook_name=df.notebook_name.astype(str)
+    df.loc[:,'notebook_name']=[x.replace('.0','') for x in df.notebook_name]
     df.loc[:,'notebook_name']=df.notebook_name.replace('nan', np.nan)
     # fix aliases and parent_avidd IDs
     aliases=['lot_alias','alias1_value','alias2_value','alias3_value']
+    df[aliases]=df[aliases].astype(str)
     for col in aliases:
-        df.loc[df[col].astype(str).str.startswith('RLA'), col]=df.loc[df[col].astype(str).str.startswith('RLA'), col].astype(str).str.replace('RLA ','RLA').str.replace('RLA-','RLA').str.replace('RLA','RLA-')
+        df.loc[df[col].str.startswith('RLA'), col]=df.loc[df[col].str.startswith('RLA'), col].str.replace('RLA ','RLA').str.replace('RLA-','RLA').str.replace('RLA','RLA-')
         if '_value' in col:
-            df.loc[df[col].astype(str).str.startswith('RLA-'), col.replace('_value','')]='RLA_ID'
-            if isinstance(df.loc[df[col].astype(str).str.startswith('RLA-'), col.replace('_value','')],float):
-                df.loc[df[col].astype(str).str.startswith('RLA-'), col.replace('_value','')]='RLA'+df.loc[df[col].astype(str).str.startswith('RLA-'), col.replace('_value','')].astype(int).astype(str)
-    df.loc[df.lot_type!="synthesized internally", 'analytical']=np.nan
+            basecol=col.replace('_value','')
+            df[basecol]=df[basecol].astype(str)
+            df.loc[df[col].str.startswith('RLA-'), basecol]='RLA_ID'
+            for i, row in df.loc[df[col].str.startswith('RLA-')].iterrows():
+                if row[basecol].isnumeric():
+                    row[basecol]='RLA'+row[basecol].astype(int).astype(str)
+            df[basecol]=df[basecol].replace('nan',None)
+    df[aliases]=df[aliases].replace('nan',None)
+    df.loc[df.lot_type!="synthesized internally", 'analytical']=None
     df.loc[:,'PARENT_AVIDD']=df.PARENT_AVIDD.astype(str).str.replace('AVI-','').str.replace('NO','nan').str.replace('AVI','').astype(float)
 
     # fix well locations
