@@ -165,6 +165,8 @@ def check_avidd_input(df):
     assert len(df[df.alias1.isna() & df.alias1_value.notna()])==0, "Missing alias1 type"
     assert len(df[df.alias2.isna() & df.alias2_value.notna()])==0, "Missing alias2 type"
     assert len(df[df.alias3.isna() & df.alias3_value.notna()])==0, "Missing alias3 type (Target)"
+    assert df.amount_prepared.apply(lambda x: str(x).replace('.', '', 1).isdigit() if pd.notna(x) else True).all(), "Amount prepared contains non-numeric values"
+    assert len(df[(df.amount_prepared.notna())&(df.amount_units.isna())])==0, "Missing amount units"
     check_notebook(df)
     print("Input file looks good!")
     return df
@@ -222,7 +224,7 @@ def clean_reg_files(df, today=None):
             df[basecol]=df[basecol].replace('nan',None)
     df[aliases]=df[aliases].replace('nan',None)
     df.loc[df.lot_type!="synthesized internally", 'analytical']=None
-    df.loc[:,'PARENT_AVIDD']=df.PARENT_AVIDD.astype(str).str.replace('AVI-','').str.replace('NO','nan').str.replace('AVI','').astype(float)
+    df.loc[:,'PARENT_AVIDD']=df.PARENT_AVIDD.astype(str).str.strip().str.replace('AVI-','').str.replace('NO','nan').str.replace('AVI','').astype(float)
 
     # fix well locations
     if 'rack_row' in df.columns:
