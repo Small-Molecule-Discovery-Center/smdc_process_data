@@ -224,7 +224,7 @@ def clean_reg_files(df, today=None):
             df[basecol]=df[basecol].replace('nan',None)
     df[aliases]=df[aliases].replace('nan',None)
     df.loc[df.lot_type!="synthesized internally", 'analytical']=None
-    df.loc[:,'PARENT_AVIDD']=df.PARENT_AVIDD.astype(str).str.strip().str.replace('AVI-','').str.replace('NO','nan').str.replace('AVI','').astype(float)
+    df.loc[:,'PARENT_AVIDD']=df.PARENT_AVIDD.astype(str).str.strip().str.replace('AVI-','').str.replace('NO','nan').str.replace('AVI','').replace('','nan').astype(float)
 
     # fix well locations
     if 'rack_row' in df.columns:
