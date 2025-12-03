@@ -163,7 +163,7 @@ def extract_rpt_data(infile, samples_only=False, outdir="./"):
         samples_dir = os.path.join(outdir, 'samples')
         zip_base = os.path.join(outdir, 'samples')
         archive_path = shutil.make_archive(zip_base, 'zip', root_dir=samples_dir)
-        print(f"\n\nExtracted and saved {len(df)} samples to the Samples folder;\nzipped folder is at {archive_path}.")
+        print(f"\n\nExtracted and saved {len(df)} samples to the Samples folder;\nzipped folder is at {archive_path}.\n\n")
         return df[['Sample', 'Plate', 'Well', 'Fname', 'intensitymax', 'massatmax',]]
     return df
 
