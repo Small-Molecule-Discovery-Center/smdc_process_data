@@ -16,6 +16,7 @@ import logging
 logger = logging.getLogger()
 import matplotlib.pyplot as plt
 import seaborn as sns
+import shutil
 
 def extract_rpt_data(infile, samples_only=False, outdir="./"):
     """Extracts data from .rpt file and saves individual sample data to ./samples/ directory.
@@ -154,8 +155,12 @@ def extract_rpt_data(infile, samples_only=False, outdir="./"):
         os.remove(os.path.join(outdir, 'linenum.txt'))
         os.remove(os.path.join(outdir, 'massstart.txt'))
         os.remove(os.path.join(outdir, 'massend.txt'))
-        df[['Sample', 'Plate', 'Well', 'Fname', 'intensitymax', 'massatmax',]].to_csv(os.path.join(outdir, 'extracted_samples.csv'), index=False)
-        print(f"Extracted and saved {len(df)} samples to the Samples folder.")
+        df[['Sample', 'Plate', 'Well', 'Fname', 'intensitymax', 'massatmax',]].to_csv(os.path.join(outdir, 'samples', 'extracted_samples.csv'), index=False)
+
+        samples_dir = os.path.join(outdir, 'samples')
+        zip_base = os.path.join(outdir, 'samples')
+        archive_path = shutil.make_archive(zip_base, 'zip', root_dir=samples_dir)
+        print(f"Extracted and saved {len(df)} samples to the Samples folder; zipped folder is at {archive_path}.")
         return df[['Sample', 'Plate', 'Well', 'Fname', 'intensitymax', 'massatmax',]]
     return df
 
