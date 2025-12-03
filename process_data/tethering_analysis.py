@@ -34,25 +34,25 @@ def extract_rpt_data(infile, samples_only=False, outdir="./"):
     if not os.path.exists(outdir):
         os.makedirs(outdir)
 
-    cmd=f"grep -n '^Sample\s[0-9]' '{file}' > {os.path.join(outdir, 'samples.txt')}"
+    cmd=f"grep -n '^Sample\t[0-9]' '{file}' > {os.path.join(outdir, 'samples.txt')}"
     os.system(cmd)
 
-    cmd=f"grep -n '^Well\s' '{file}' > {os.path.join(outdir, 'wells.txt')}"
+    cmd=f"grep -n '^Well\t' '{file}' > {os.path.join(outdir, 'wells.txt')}"
     os.system(cmd)
 
-    cmd=f"grep -n '^FileName\s' '{file}' > {os.path.join(outdir, 'fnames.txt')}"
+    cmd=f"grep -n '^FileName\t' '{file}' > {os.path.join(outdir, 'fnames.txt')}"
     os.system(cmd)
 
-    cmd=f"grep -n '^BPM\s' '{file}' > {os.path.join(outdir, 'bpms.txt')}"
+    cmd=f"grep -n '^BPM\t' '{file}' > {os.path.join(outdir, 'bpms.txt')}"
     os.system(cmd)
 
-    cmd=f"grep -n '^BPI\s' '{file}' > {os.path.join(outdir, 'bpis.txt')}"
+    cmd=f"grep -n '^BPI\t' '{file}' > {os.path.join(outdir, 'bpis.txt')}"
     os.system(cmd)
 
     cmd=f"wc -l < '{file}' > {os.path.join(outdir, 'linenum.txt')}"
     os.system(cmd)
 
-    cmd=f"grep -n '^\;Mass' '{file}' > {os.path.join(outdir, 'massstart.txt')}"
+    cmd=f"grep -n '^;Mass' '{file}' > {os.path.join(outdir, 'massstart.txt')}"
     os.system(cmd)
 
     search='}'
