@@ -10,6 +10,9 @@ A set of functions to preprocess various kinds of raw data for upload or further
 ### AVIDD Disulfide Tethering Match IDs:
 [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Small-Molecule-Discovery-Center/smdc_preprocess_data/blob/main/AVIDD_match_disulfides.ipynb)
 
+### Xevo MassLynx Data Extraction:
+[![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Small-Molecule-Discovery-Center/smdc_process_data/blob/main/Extract_MassSpec_Data.ipynb)
+
 #### database_interactions
 Notebooks for querying the database, making plate maps and entering new data
 
