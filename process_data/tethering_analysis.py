@@ -142,7 +142,10 @@ def extract_rpt_data(infile, samples_only=False, outdir="./"):
     for i, row in df.iterrows():
         if row.linenum_start==-99:
             continue
-        samplefile=os.path.join(outdir, 'samples', f'Sample_{str(row.Sample).zfill(3)}_data.txt')
+        if samples_only:
+            samplefile=os.path.join(outdir, 'samples', f'{row.Fname}.txt')
+        else:
+            samplefile=os.path.join(outdir, 'samples', f'Sample_{str(row.Sample).zfill(3)}_data.txt')
         with open(samplefile, "wb") as f:
             f.writelines(content[row.linenum_start-1:row.linenum-1])
     
