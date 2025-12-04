@@ -13,6 +13,9 @@ A set of functions to preprocess various kinds of raw data for upload or further
 ### Xevo MassLynx Data Extraction:
 [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Small-Molecule-Discovery-Center/smdc_process_data/blob/main/Extract_MassSpec_Data.ipynb)
 
+### Plot LCMS Spectra
+[![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Small-Molecule-Discovery-Center/smdc_process_data/blob/main/Plot_LCMS_Spectra.ipynb)
+
 #### database_interactions
 Notebooks for querying the database, making plate maps and entering new data
 
