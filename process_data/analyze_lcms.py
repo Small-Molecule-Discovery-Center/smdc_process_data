@@ -69,14 +69,13 @@ def _process_chromatogram_df(df2):
     return df2
 
 
-def plot_lcms_spectrum(info_df, data_df, sample_id="04036CB-INO2-P12_1", scan_range=5, save_dir=None):
+def plot_lcms_spectrum(info_df, data_df, sample_id="04036CB-INO2-P12_1", scan_range=5, save=False, save_dir="./"):
     """Plot LCMS spectrum with expected mass and common adducts highlighted."""
     
-    sample_id=info_df[info_df.sample_id==sample_id].smdc_id.astype(int).iloc[0]
     compound_mass=info_df[info_df.sample_id==sample_id].MolWt.iloc[0]
     fig, ax = plt.subplots(1, figsize=(15,4))
     sns.lineplot(data=data_df[data_df.sample_id==sample_id], x="mass_peak_maximum_mz", y="maximum_intensity_cs", ax=ax)
-    ax.axvline(compound_mass, color='red', linestyle='--', label=smdc_id)
+    ax.axvline(compound_mass, color='red', linestyle='--', label="Compound")
     ax.axvspan(compound_mass-scan_range, compound_mass+scan_range, color='yellow', alpha=0.3, label=f"Expected mass ({int(compound_mass)}±{scan_range})")
     ax.axvspan(130-scan_range, 130+scan_range, color='gray', alpha=0.3, label="ACN (130±5)")
     ax.axvspan(157-scan_range, 157+scan_range, color='gray', alpha=0.3, label="DMSO dimer (157±5)")
@@ -91,12 +90,12 @@ def plot_lcms_spectrum(info_df, data_df, sample_id="04036CB-INO2-P12_1", scan_ra
     # ax.axvspan(k_adduct-scan_range, k_adduct+scan_range, color='purple', alpha=0.3, label="K+ adduct (+39)")
     dmso_adduct=compound_mass+79
     ax.axvspan(dmso_adduct-scan_range, dmso_adduct+scan_range, color='green', alpha=0.3, label="DMSO adduct (+79)")
-    ax.set_title(f"LCMS Spectrum for {sample_id}: {smdc_id} (MolWt: {round(compound_mass, 3)})")
+    ax.set_title(f"LCMS Spectrum for {sample_id} (MolWt: {round(compound_mass, 3)})")
     ax.set_xlabel("m/z")
     ax.set_ylabel("Max Intensity (CS)")
     ax.set_xlim(100,600)
     ax.legend()
-    if save_dir is not None:
+    if save:
         plt.savefig(f"{save_dir}/{sample_id}_lcms_spectrum.png", dpi=300)
         plt.close()
 
@@ -261,7 +260,7 @@ def plot_uv_vs_time(data_df, sample_id="04036CB-INO2-P12_1", percent=False,
 def plot_tic_vs_time(sample_id="04036CB-INO2-P12_1", data_df=None, ax=None, save_dir=None):
     """Plot Total Ion Chromatogram (TIC) over UV absorption data."""
     if ax is None:
-        fig, ax1 = plt.subplots(figsize=(12, 4))
+        _, ax1 = plt.subplots(figsize=(12, 4))
     else:
         ax1 = ax
 
@@ -274,7 +273,7 @@ def plot_tic_vs_time(sample_id="04036CB-INO2-P12_1", data_df=None, ax=None, save
     # Create a second y-axis for TIC
     ax2 = ax1.twinx()
     ax2.set_ylabel('Total Ion Chromatogram (TIC)', color='tab:red')
-    sns.lineplot(data=data_df, x='time_peak_maximum_msminutes', y='total_ion_chromatogram_tic', ax=ax2, color='tab:red')
+    # sns.lineplot(data=data_df, x='time_peak_maximum_msminutes', y='total_ion_chromatogram_tic', ax=ax2, color='tab:red')
     ax2.tick_params(axis='y', labelcolor='tab:red')
 
     plt.title(f'TIC and UV Absorption for {sample_id}')
