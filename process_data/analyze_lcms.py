@@ -69,7 +69,7 @@ def _process_chromatogram_df(df2):
     return df2
 
 
-def plot_lcms_spectrum(info_df, data_df, sample_id="04036CB-INO2-P12_1", scan_range=5, save=False, save_dir="./"):
+def plot_lcms_spectrum(info_df, data_df, sample_id="04036CB-INO2-P12_1", scan_range=3, save=False, save_dir="./"):
     """Plot LCMS spectrum with expected mass and common adducts highlighted."""
     info_df.columns=[col.lower().replace(" ","").replace("_",'') for col in info_df.columns]
     compound_mass=info_df[info_df.sampleid==sample_id].molwt.iloc[0]
@@ -77,8 +77,8 @@ def plot_lcms_spectrum(info_df, data_df, sample_id="04036CB-INO2-P12_1", scan_ra
     sns.lineplot(data=data_df[data_df.sample_id==sample_id], x="mass_peak_maximum_mz", y="maximum_intensity_cs", ax=ax)
     ax.axvline(compound_mass, color='red', linestyle='--', label="Compound")
     ax.axvspan(compound_mass-scan_range, compound_mass+scan_range, color='yellow', alpha=0.3, label=f"Expected mass ({int(compound_mass)}±{scan_range})")
-    ax.axvspan(130-scan_range, 130+scan_range, color='gray', alpha=0.3, label="ACN (130±5)")
-    ax.axvspan(157-scan_range, 157+scan_range, color='gray', alpha=0.3, label="DMSO dimer (157±5)")
+    ax.axvspan(130-scan_range, 130+scan_range, color='gray', alpha=0.3, label=f"ACN (130±{scan_range})")
+    ax.axvspan(157-scan_range, 157+scan_range, color='gray', alpha=0.3, label=f"DMSO dimer (157±{scan_range})")
     # oxygen adduct
     o_adduct=compound_mass+16
     ax.axvspan(o_adduct-scan_range, o_adduct+scan_range, color='cyan', alpha=0.3, label="Oxidation adduct (+16)")
