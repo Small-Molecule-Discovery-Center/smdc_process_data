@@ -11,7 +11,7 @@ A set of functions to preprocess various kinds of raw data for upload or further
 [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Small-Molecule-Discovery-Center/smdc_preprocess_data/blob/main/AVIDD_match_disulfides.ipynb)
 
 ### Xevo MassLynx Data Extraction:
-[![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Small-Molecule-Discovery-Center/smdc_process_data/blob/main/Extract_MassSpec_Data.ipynb)
+[![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Small-Molecule-Discovery-Center/smdc_process_data/blob/main/Extract_Xevo_MassSpec_Data.ipynb)
 
 ### Plot LCMS Spectra
 [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Small-Molecule-Discovery-Center/smdc_process_data/blob/main/Plot_LCMS_Spectra.ipynb)
