@@ -71,8 +71,8 @@ def _process_chromatogram_df(df2):
 
 def plot_lcms_spectrum(info_df, data_df, sample_id="04036CB-INO2-P12_1", scan_range=5, save=False, save_dir="./"):
     """Plot LCMS spectrum with expected mass and common adducts highlighted."""
-    
-    compound_mass=info_df[info_df.sample_id==sample_id].MolWt.iloc[0]
+    info_df.columns=[col.lower().replace(" ","").replace("_",'') for col in info_df.columns]
+    compound_mass=info_df[info_df.sampleid==sample_id].molwt.iloc[0]
     fig, ax = plt.subplots(1, figsize=(15,4))
     sns.lineplot(data=data_df[data_df.sample_id==sample_id], x="mass_peak_maximum_mz", y="maximum_intensity_cs", ax=ax)
     ax.axvline(compound_mass, color='red', linestyle='--', label="Compound")
@@ -93,7 +93,8 @@ def plot_lcms_spectrum(info_df, data_df, sample_id="04036CB-INO2-P12_1", scan_ra
     ax.set_title(f"LCMS Spectrum for {sample_id} (MolWt: {round(compound_mass, 3)})")
     ax.set_xlabel("m/z")
     ax.set_ylabel("Max Intensity (CS)")
-    ax.set_xlim(100,600)
+    xmax=np.ceil((compound_mass+200)/100)*100 if compound_mass+200>600 else 600
+    ax.set_xlim(100,xmax)
     ax.legend()
     if save:
         plt.savefig(f"{save_dir}/{sample_id}_lcms_spectrum.png", dpi=300)
