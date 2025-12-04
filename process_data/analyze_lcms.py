@@ -72,7 +72,7 @@ def _process_chromatogram_df(df2):
 def plot_lcms_spectrum(info_df, data_df, sample_id="04036CB-INO2-P12_1", scan_range=5, save_dir=None):
     """Plot LCMS spectrum with expected mass and common adducts highlighted."""
     
-    smdc_id=info_df[info_df.sample_id==sample_id].SMDC_ID.astype(int).iloc[0]
+    sample_id=info_df[info_df.sample_id==sample_id].smdc_id.astype(int).iloc[0]
     compound_mass=info_df[info_df.sample_id==sample_id].MolWt.iloc[0]
     fig, ax = plt.subplots(1, figsize=(15,4))
     sns.lineplot(data=data_df[data_df.sample_id==sample_id], x="mass_peak_maximum_mz", y="maximum_intensity_cs", ax=ax)
