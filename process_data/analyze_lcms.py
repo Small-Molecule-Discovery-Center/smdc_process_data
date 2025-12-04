@@ -81,13 +81,13 @@ def plot_lcms_spectrum(info_df, data_df, sample_id="04036CB-INO2-P12_1", scan_ra
     ax.axvspan(157-scan_range, 157+scan_range, color='gray', alpha=0.3, label="DMSO dimer (157±5)")
     # oxygen adduct
     o_adduct=compound_mass+16
-    # ax.axvspan(o_adduct-scan_range, o_adduct+scan_range, color='cyan', alpha=0.3, label="Oxygen adduct (+16)")
+    ax.axvspan(o_adduct-scan_range, o_adduct+scan_range, color='cyan', alpha=0.3, label="Oxygen adduct (+16)")
     h2o_adduct=compound_mass+18
     # ax.axvspan(h2o_adduct-scan_range, h2o_adduct+scan_range, color='orange', alpha=0.3, label="H2O/NH4+ adduct (+18)")
     na_adduct=compound_mass+23
     ax.axvspan(na_adduct-scan_range, na_adduct+scan_range, color='blue', alpha=0.3, label="Na+ adduct (+23)")
     k_adduct=compound_mass+39
-    # ax.axvspan(k_adduct-scan_range, k_adduct+scan_range, color='purple', alpha=0.3, label="K+ adduct (+39)")
+    ax.axvspan(k_adduct-scan_range, k_adduct+scan_range, color='purple', alpha=0.3, label="K+ adduct (+39)")
     dmso_adduct=compound_mass+79
     ax.axvspan(dmso_adduct-scan_range, dmso_adduct+scan_range, color='green', alpha=0.3, label="DMSO adduct (+79)")
     ax.set_title(f"LCMS Spectrum for {sample_id} (MolWt: {round(compound_mass, 3)})")
