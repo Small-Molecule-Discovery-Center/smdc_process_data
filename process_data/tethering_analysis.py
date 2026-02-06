@@ -22,11 +22,12 @@ def extract_rpt_data(infile, samples_only=False, outdir="./"):
     """Extracts data from .rpt file and saves individual sample data to ./samples/ directory.
     
     Args:
-        infile (str): Path to the .rpt file.
-        HA_ID (int): High-throughput assay ID.
-        outdir (str): Output directory to save intermediate files.
+        infile (str): Path to .rpt file.
+        samples_only (bool): If True, only extract individual sample files.
+        outdir (str): Output directory to save extracted data.
+
     Returns:
-        pd.DataFrame: DataFrame containing extracted sample data."""
+        pd.DataFrame: DataFrame containing extracted sample information."""
         
     file=infile
     print('\n\n',file)
@@ -34,6 +35,7 @@ def extract_rpt_data(infile, samples_only=False, outdir="./"):
     if not os.path.exists(outdir):
         os.makedirs(outdir)
 
+    # extract key line numbers using grep
     cmd=f"grep -n '^Sample\t[0-9]' '{file}' > {os.path.join(outdir, 'samples.txt')}"
     os.system(cmd)
 
@@ -59,6 +61,7 @@ def extract_rpt_data(infile, samples_only=False, outdir="./"):
     cmd=f"grep -n {search} '{file}' > {os.path.join(outdir, 'massend.txt')}"
     os.system(cmd)
 
+    # read in key line numbers
     samples = pd.read_csv(os.path.join(outdir, 'samples.txt'), sep=':', header=None)
     wells = pd.read_csv(os.path.join(outdir, 'wells.txt'), sep=':', header=None)
     fnames = pd.read_csv(os.path.join(outdir, 'fnames.txt'), sep=':', header=None)
@@ -98,6 +101,7 @@ def extract_rpt_data(infile, samples_only=False, outdir="./"):
 
     nsamples=len(samples)
 
+    # assign samples to wells, fnames, bpms, bpis, starts, ends
     for i in range(nsamples):
         if i==nsamples-1:
             linerange=range(samples.linenum.loc[i], linenum)
@@ -111,6 +115,7 @@ def extract_rpt_data(infile, samples_only=False, outdir="./"):
         starts.loc[starts.linenum.isin(linerange), 'Sample']=sample
         ends.loc[ends.linenum.isin(linerange), 'Sample']=sample
 
+    # get end rows for each sample, account for multiple end row matches
     endrows=[]
     for i in range(len(starts)):
         if i==len(starts)-1:
@@ -121,6 +126,7 @@ def extract_rpt_data(infile, samples_only=False, outdir="./"):
         endrows.append(tmp)
     endrows=pd.concat(endrows)
 
+    # merge all together
     df=samples.merge(wells, how='left', on='Sample', suffixes=['_sample','_well'])
     df=df.merge(fnames, how='left', on='Sample')
     df=df.merge(bpis, how='left', on='Sample', suffixes=['_fname','_bpi'])
@@ -131,6 +137,7 @@ def extract_rpt_data(infile, samples_only=False, outdir="./"):
     df.columns=['Sample', 'Plate', 'Well', 'Fname', 'intensitymax', 'massatmax', 'linenum_start', 'linenum']
     df.linenum_start=df.linenum_start.replace(np.nan, -99).astype(int)
 
+    # extract individual sample data files
     if not os.path.exists(os.path.join(outdir, 'samples')):
         os.makedirs(os.path.join(outdir, 'samples'))
     
@@ -149,6 +156,7 @@ def extract_rpt_data(infile, samples_only=False, outdir="./"):
         with open(samplefile, "wb") as f:
             f.writelines(content[row.linenum_start-1:row.linenum-1])
     
+    # cleanup intermediate files
     if samples_only:
         os.remove(os.path.join(outdir, 'samples.txt'))
         os.remove(os.path.join(outdir, 'wells.txt'))
@@ -165,6 +173,164 @@ def extract_rpt_data(infile, samples_only=False, outdir="./"):
         archive_path = shutil.make_archive(zip_base, 'zip', root_dir=samples_dir)
         print(f"\n\nExtracted and saved {len(df)} samples to the Samples folder;\nzipped folder is at {archive_path}.\n\n")
         return df[['Sample', 'Plate', 'Well', 'Fname', 'intensitymax', 'massatmax',]]
+    return df
+
+
+def extract_txt_data(infile, samples_only=False, outdir="./", max_mass=10000):
+    """Extract relevant data from OpenLynx text export file.
+
+    Args:
+        infile (str): Path to OpenLynx text export file.
+        samples_only (bool): If True, only extract individual sample files.
+        outdir (str): Output directory to save extracted data.
+        max_mass (float): Maximum mass value to identify end of mass data.
+    
+    Returns:
+        pd.DataFrame: DataFrame containing extracted sample information."""
+    file=infile
+
+    if not os.path.exists(outdir):
+        os.makedirs(outdir)
+
+    # extract relevant line numbers
+    cmd=f"grep -n '^Sample [0-9]' '{file}' > {os.path.join(outdir, 'samples.txt')}"
+    os.system(cmd)
+
+    cmd=f"grep -n '^Mass\tIntensity' '{file}' > {os.path.join(outdir, 'massstart.txt')}"
+    os.system(cmd)
+
+    cmd=f"grep -n '^{max_mass}.' '{file}' > {os.path.join(outdir, 'massend.txt')}"
+    os.system(cmd)
+
+    cmd=f"grep -n '^Sample\tVial\tID\tFile\tDate\tTime\tDescription' '{file}' > {os.path.join(outdir, 'fnames.txt')}"
+    os.system(cmd)
+
+    cmd=f"grep -n '^Peak Number\tVial\tCompounds\tMass(%Purity)\tFunction\tTrace\tTime\tBPI\tArea Abs.\tArea %Total\tArea %BP\tWidth\tHeight\tState' '{file}' > {os.path.join(outdir, 'bpis.txt')}"
+    os.system(cmd)
+    with open(file, "rb") as f:
+        content=f.readlines()
+
+    linenum=len(content)+1
+
+    # read in intermediate files and extract relevant sections
+    fnames=pd.read_csv(os.path.join(outdir, 'fnames.txt'), sep=':', header=None)
+    with open(os.path.join(outdir, 'fnames.txt'), "wb") as f:
+        f.writelines(content[fnames[0].iloc[0]-1:fnames[0].iloc[1]-1])
+    fnames=pd.read_csv(os.path.join(outdir, 'fnames.txt'), sep='\t')
+    fnames=fnames.dropna(how='all', axis=1)
+
+    bpis=pd.read_csv(os.path.join(outdir, 'bpis.txt'), sep=':', header=None)
+    with open(os.path.join(outdir, 'bpis.txt'), "wb") as f:
+        f.writelines(content[bpis[0].iloc[0]-1:bpis[0].iloc[-1]+2])
+    bpis=pd.read_csv(os.path.join(outdir, 'bpis.txt'), sep='\t')
+    bpis=bpis.dropna(how='all', axis=1).drop_duplicates()
+    bpis=bpis[(bpis.BPI.notna())&(bpis.BPI!='BPI')]
+    bpis=bpis[['Vial','BPI',]]
+
+    samples=pd.read_csv(os.path.join(outdir, 'samples.txt'), sep=':', header=None)
+    samples.columns=['linenum_sample','Sample']
+    samples.Sample=samples.Sample.str.replace('Sample ','').astype(int)
+
+    starts=pd.read_csv(os.path.join(outdir, 'massstart.txt'), sep=':', header=None)
+    starts.columns=['linenum_massstart','headers']
+    starts['Sample']=np.nan
+
+    ends=pd.read_csv(os.path.join(outdir, 'massend.txt'), sep=':', header=None)
+    ends.columns=['linenum_massend', 'value']
+    ends['Sample']=np.nan
+    nsamples=len(samples)
+
+    # assign sample ids to starts, ends
+    for i in range(nsamples):
+        # assign ending linenum
+        if i==nsamples-1:
+            linerange=range(samples.linenum_sample.loc[i], linenum)
+        else:
+            linerange=range(samples.linenum_sample.loc[i], samples.linenum_sample.loc[i+1]+1)
+        
+        # get sample name not just index number
+        sample=samples.Sample.loc[i]
+        
+        # assign sample name to starts and ends
+        starts.loc[starts.linenum_massstart.isin(linerange), 'Sample']=sample
+        ends.loc[ends.linenum_massend.isin(linerange), 'Sample']=sample
+
+    # get end rows for each sample, account for multiple/missing end row matches
+    endrows=[]
+    for i in range(len(starts)):
+        if i==len(starts)-1:
+            linerange=range(starts.linenum_massstart.loc[i], linenum)
+        else:
+            linerange=range(starts.linenum_massstart.loc[i], starts.linenum_massstart.loc[i+1]+1)
+        try:
+            tmp=pd.DataFrame(ends[ends.linenum_massend.isin(linerange)].iloc[0]).T
+        except IndexError:
+            sample=samples.Sample.loc[i]
+            logger.warning(f"No mass end found for sample {sample}; excluding from analysis.")
+            tmp=pd.DataFrame({'linenum_massend':samples[samples.Sample==sample].linenum_sample.iloc[0]-1, 'value':'interpolated', 'Sample':sample}, index=[0])
+        endrows.append(tmp)
+    endrows=pd.concat(endrows, ignore_index=True)
+    if not os.path.exists(os.path.join(outdir, 'samples')):
+        os.makedirs(os.path.join(outdir, 'samples'))
+
+    # merge all together
+    df=fnames.merge(samples, how='left', on='Sample')
+    df=df.merge(bpis, how='left', on='Vial')
+    df=df.merge(starts, how='left', on='Sample')
+    df=df.merge(endrows, how='left', on='Sample')
+    df[['Plate','Well']]=df.Vial.str.split(':', expand=True)[[0,1]]
+    df=df[['Sample', 'Plate', 'Well', 'File', 'BPI',
+        'linenum_massstart', 'linenum_massend']]
+    df.columns=[ 'Sample', 'Plate', 'Well','Fname','intensitymax',
+        'linenum_start', 'linenum']
+    df.linenum_start=df.linenum_start.replace(np.nan, -99).astype(int)
+    df.intensitymax=df.intensitymax.astype(float)
+    df['realintensitymax']=np.nan
+    df['massatmax']=np.nan
+    df=df.drop_duplicates()
+
+    # extract individual sample data files
+    for i, row in df.iterrows():
+        if row.linenum_start==-99:
+            continue
+        if samples_only:
+            samplefile=os.path.join(outdir, 'samples', f'{row.Fname}.txt')
+        else:
+            samplefile=os.path.join(outdir, 'samples', f'Sample_{str(row.Sample).zfill(3)}_data.txt')
+        with open(samplefile, "wb") as f:
+            f.write(";Mass\t% BPI\n".encode())
+            f.writelines(content[row.linenum_start:row.linenum])
+        
+        # extract massatmax / intensitymax from data
+        tmp=pd.read_csv(samplefile, sep='\t')
+        tmp.columns=['mass', 'intensity']
+        maxes=tmp[tmp.intensity==tmp.intensity.max()]
+        if len(maxes)>0:
+            df.loc[i, 'realintensitymax']=maxes.intensity.values[0]
+            df.loc[i, 'massatmax']=maxes.mass.values[0]
+        else:
+            df.loc[i, 'realintensitymax']=np.nan
+            df.loc[i, 'massatmax']=np.nan
+
+    df=df[df.realintensitymax.notna()]
+
+    # cleanup intermediate files
+    if samples_only:
+        os.remove(os.path.join(outdir, 'samples.txt'))
+        os.remove(os.path.join(outdir, 'wells.txt'))
+        os.remove(os.path.join(outdir, 'fnames.txt'))
+        os.remove(os.path.join(outdir, 'bpms.txt'))
+        os.remove(os.path.join(outdir, 'bpis.txt'))
+        os.remove(os.path.join(outdir, 'linenum.txt'))
+        os.remove(os.path.join(outdir, 'massstart.txt'))
+        os.remove(os.path.join(outdir, 'massend.txt'))
+        df[['Sample', 'Plate', 'Well', 'Fname', 'intensitymax','massatmax']].to_csv(os.path.join(outdir, 'samples', 'extracted_samples.csv'), index=False)
+
+        samples_dir = os.path.join(outdir, 'samples')
+        zip_base = os.path.join(outdir, 'samples')
+        archive_path = shutil.make_archive(zip_base, 'zip', root_dir=samples_dir)
+        print(f"\n\nExtracted and saved {len(df)} samples to the Samples folder;\nzipped folder is at {archive_path}.\n\n")
+        return df[['Sample', 'Plate', 'Well', 'Fname', 'intensitymax','massatmax']]
     return df
 
 
@@ -235,14 +401,14 @@ def calculate_adduct_and_cap_ranges(HA_ID, barcode, pmirm=False, cmirm=True, rmi
         addcaps_list=[addcaps1]
     else:
         addcaps_list=[addcaps1, addcaps2]
-    
+
     dfs=[]
     for addcaps, mass in zip(addcaps_list, masses):
 
         protein_mass=mass
         site_count = nums.site_count.astype(float).iloc[0]
         reductant_mass = nums.reductant_mass.astype(float).iloc[0]
-
+        
         fix_hydrogen=False
         if pmirm:
             protein_mass=protein_mass+hydrogen # add hydrogen to get free protein mass
@@ -396,7 +562,7 @@ def analyze_rpt_data(df, addcaps, masses, site_count, scan_range, assay_class="H
         dat.columns=['mass', 'intensity']
         
         # create string annot of dat
-        dat['string']=pd.cut(dat.intensity, [-1., 10.5, 30., 50., 70., 100., 200.], labels=['','.','-','i','l','!'])
+        dat['string']=pd.cut(dat.intensity, [-1., 10.5, 30., 50., 70., 100., 200., np.inf], labels=['','.','-','i','l','!','^'])
         row['string']=dat['string'].astype(str).str.cat(sep='')
         
         # add protein intensities, remove from dat
@@ -571,6 +737,7 @@ def analyze_rpt_data(df, addcaps, masses, site_count, scan_range, assay_class="H
     # intensity of all peaks noted / all peaks noted plus extra signal
     df['signalsignificance']=100*(df.intensitytotal+df.intensitysecondary)/(df.well_sum+df.intensitytotal+df.intensitysecondary)
     # TODO: remove properties before insertion into db? "protein", "protein_adduct", "protein_secondary", "protein_2adduct", "well_sum", "mass", "intensity"
+    df=df.drop(columns=['intensityprint'])
     return df
 
 
