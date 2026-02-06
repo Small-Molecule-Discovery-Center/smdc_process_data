@@ -138,6 +138,7 @@ def create_nine_point_files(input='test.txt'):
     assert len(cmpd_info[cmpd_info.transfer_volume>1000])==0, "There are dilutions with more than 1000nL planned ejection"
     
     # preserve compound order from original file
+    cmpd_info.sample_name=cmpd_info.sample_name.astype(str)
     compcat=CategoricalDtype(categories=cmpd_info.sample_name.unique(), ordered=True)
     cmpd_info.sample_name=cmpd_info.sample_name.astype(compcat)
     
