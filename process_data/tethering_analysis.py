@@ -2,13 +2,19 @@
 # 11/26/2025 AKP
 # For SMDC
 import os
+from random import sample
 import numpy as np
 import pandas as pd
 import sys
 
+import glob
+from PIL import Image
+
 try:
     sys.path.append('/Users/apaulson/repos/data-proc/')
     import plate_maps as pm
+    import plot_curves as pc
+
 except ImportError:
     pass
 
@@ -779,9 +785,8 @@ def prepare_for_plotting(df, addcaps, barcode):
     return dfm
 
 
-colors=['gray','lightpink','palevioletred','mediumvioletred','darkmagenta']
 
-def plot_bpi(dfm, smdc, scan_range, outdir="./trace_images", save=True):
+def plot_bpi(dfm, smdc, scan_range, outdir="./", save=True):
     """Plots BPI traces with adduct and cap mass annotations.
 
     Args:
@@ -802,29 +807,37 @@ def plot_bpi(dfm, smdc, scan_range, outdir="./trace_images", save=True):
     xmin=0
     xmax=dfm.protein_mass.max()+3
 
-    for well in df1[df1.ICL_IC_ID==smdc].Well:
-        barcode=df1[df1.Well==well].Barcode.iloc[0]
-        sample=df1[df1.Well==well].Sample.iloc[0]
-        conc=df1[df1.Well==well].Conc_uM.iloc[0]
-        conc_unit='uM'
+    dat=df1[df1.ICL_IC_ID==smdc].copy() # subset in case there is >1 plate in same dfm - should not be because this plots the wrong data
+
+    for row in dat.itertuples():
+        well=row.Well
+        barcode=row.Barcode
+        sample=row.Sample
+        conc=row.Conc_uM
+        conc=conc.astype(float)*1000
+        conc_unit='nM'
         if conc is None:
-            conc=df1[df1.Well==well].Conc_nM.iloc[0]
-            conc_unit='nM'
-        pct=df1[df1.Well==well].hmlab.iloc[0]
+            conc=row.Conc_nM
+        conc=round(conc, 3)
+        pct=row.hmlab
+        # print(f"Plotting {barcode} {well} {smdc} {conc} {conc_unit} {pct}% labeled")
     
         dat=pd.read_csv(os.path.join(outdir, 'samples', f'Sample_{str(sample).zfill(3)}_data.txt'), sep='\t')
         dat.columns=['Mass','BPI']
         dat=dat.astype(float)
         dat.head(2)
-        
-        colors=['gray','lightpink','palevioletred','mediumvioletred','darkmagenta']
-        labels=['protein only','single','double','triple']
 
         fig1, ax1 = plt.subplots(1, figsize=(15,3))
-        sns.lineplot(data=dat, x='Mass', y='BPI', color='navy', lw=1)
+        sns.lineplot(data=dat, x='Mass', y='BPI', color='navy', lw=1, ax=ax1)
+        axes=[ax1]
 
+        # if len(dfm.protein_mass.unique())==2:
         fig2, ax2 = plt.subplots(1, figsize=(15,3))
-        sns.lineplot(data=dat, x='Mass', y='BPI', color='navy', lw=1)        
+        sns.lineplot(data=dat, x='Mass', y='BPI', color='navy', lw=1, ax=ax2)        
+        axes.append(ax2)
+
+        colors=['gray','lightpink','palevioletred','mediumvioletred','darkmagenta']
+        labels=['protein only','single','double','triple']
 
         for i, df in enumerate(dfs):
             barcode=df[df.Sample==sample].Barcode.iloc[0]
@@ -834,7 +847,8 @@ def plot_bpi(dfm, smdc, scan_range, outdir="./trace_images", save=True):
             xmax=protein_mass+3*adduct_mass+5*scan_range
             for mult in [0,1,2,3]:
                 ax1.axvspan(protein_mass+mult*adduct_mass-scan_range, protein_mass+mult*adduct_mass+scan_range, color=colors[mult], label=labels[mult], zorder=0, alpha=0.5)
-
+            
+            # if len(dfm.protein_mass.unique())==2:
             ax2.axvspan(protein_mass-scan_range, protein_mass+scan_range, color='gray', label='protein_only', zorder=0, alpha=0.5)
             protnums=df.loc[df['Sample']==sample,[x for x in df.columns if 'min' in x]].T
             protnums=protnums.sort_values(by=protnums.columns[0])
@@ -842,16 +856,16 @@ def plot_bpi(dfm, smdc, scan_range, outdir="./trace_images", save=True):
             cols=protnums.index.tolist()
             cols=[x.replace('_min','') for x in cols]
             cols.remove('free_protein')
-            
+        
             pal=sns.color_palette("viridis", len(cols))
-            
+        
             for j, lab in enumerate(cols):
                 ax2.axvspan(df[df.Sample==sample][f'{lab}_min'].astype(float).iloc[0],
                         df[df.Sample==sample][f'{lab}_max'].astype(float).iloc[0],
                         label=lab, color=pal[j], zorder=-j, alpha=0.5)
 
         
-        for ax in [ax1, ax2]:
+        for ax in axes:
             ax.set_xlim(xmin, xmax)
             ax.legend()
             handles, labels=ax.get_legend_handles_labels()
@@ -873,7 +887,7 @@ def plot_bpi(dfm, smdc, scan_range, outdir="./trace_images", save=True):
                 fig1.savefig(os.path.join(outdir, 'trace_images', f'{barcode}_{well}_{smdc}_mults.png'))
                 plt.close(fig1)
             
-
+        # if len(dfm.protein_mass.unique())==2:
         if not np.isnan(conc):
             ax2.set_title(f'{barcode} {well} {smdc} {conc} {conc_unit} labeling assessment ({pct}% labeled)');
             if save:
@@ -884,3 +898,69 @@ def plot_bpi(dfm, smdc, scan_range, outdir="./trace_images", save=True):
             if save:
                 fig2.savefig(os.path.join(outdir, 'trace_images', f'{barcode}_{well}_{smdc}_full.png'))
                 plt.close(fig2)
+
+
+
+def make_gif_filtered(frame_folder, substring='1199314', outdir='.', trace='mult'):
+    all_pngs = glob.glob(f"{frame_folder}/**/*.png", recursive=True)  # Recursive optional
+    matching = [f for f in all_pngs if substring in os.path.basename(f)]
+    matching = [f for f in matching if trace in os.path.basename(f)]
+    matching.sort()  # Sort for consistent order
+    frames = [Image.open(image) for image in matching]
+    if not os.path.exists(os.path.join(outdir, 'trace_gifs')):
+        os.makedirs(os.path.join(outdir, 'trace_gifs'))
+    if frames:
+        frames[0].save(os.path.join(outdir, 'trace_gifs', f'{substring}.gif'), format="GIF", append_images=frames[1:],
+                       save_all=True, duration=500, loop=0)
+    else:
+        print("No matching PNGs found.")
+
+
+
+def round_to_1(x):
+    return round(x, -int(np.floor(np.log10(abs(x)))))
+
+
+
+def plot_dr_curve(dfm, smdc, outdir="./", save=True):
+    """Plots dose-response curves for tethering analysis.
+
+    Args:
+        dfm (pd.DataFrame): DataFrame containing merged data for plotting.
+        smdc (int): Compound ID for plotting.
+        outdir (str): Directory to save the plots.
+    Returns:
+        None."""
+
+    if np.isnan(smdc):
+        print("SMDC is NaN, skipping dose-response curve plotting.")
+        return
+    tmp=dfm[dfm.ICL_IC_ID==smdc].copy()
+    tmp=tmp[tmp.Conc_uM!=0]
+    tmp['logConc']=[np.log10(x/1000000) for x in tmp.Conc_uM]
+    barcode=tmp.Barcode.iloc[0]
+
+    colors=['gray','lightpink','palevioletred','mediumvioletred','darkmagenta']
+
+    fig, ax = plt.subplots(1, figsize=(5,5))
+    for i, lab in enumerate(['percentlabeled']):#,'percentsinglelabeled', 'percentdoublelabeled', 'percenttriplelabeled',]):
+        try:
+            fps, pcov, ax = pc.ModelAndScatterPlot(tmp.logConc, tmp[lab], label=lab, ax=ax, color=colors[i], init=[100, 0, -5., 1],
+                                  bounds=([10,-20,-np.inf,-np.inf], [120, 20, np.inf,np.inf])) #bounds=(bottom,top)
+        except Exception as e:
+            print(f"Error occurred while processing {lab}: {e}")
+        # try:
+        #     ax.plot(tmp.logConc, tmp[lab], label=lab, color=colors[i])
+        # except:
+        #     pass
+    ax.legend()#loc='center left', bbox_to_anchor=(1, 0.5))
+    ax.set_ylim(-5,80)
+    ax.set_xlabel('logConc')
+    ax.set_ylabel('Percentage')
+    ax.set_title(f'{barcode}\nSMDC_{int(smdc)}    IC50: {round(10**fps[2]*1e6, 1)} uM\nB: {round(fps[1],2)}    T: {round(fps[0],2)}    H: {-round(fps[3],2)}');
+    
+    if save:
+        if not os.path.exists(os.path.join(outdir, 'curve_images')):
+            os.makedirs(os.path.join(outdir, 'curve_images'))
+        plt.savefig(os.path.join(outdir, 'curve_images', f'{barcode}_{int(smdc)}_DR_curve.png'))
+        plt.close()
