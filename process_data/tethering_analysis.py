@@ -521,7 +521,8 @@ def calculate_adduct_and_cap_ranges(HA_ID, barcode, pmirm=False, cmirm=True, rmi
 
 
 def analyze_rpt_data(df, addcaps, masses, site_count, scan_range, assay_class="HTS", outdir="./"): 
-    """Analyzes extracted .rpt data for tethering analysis.
+    """Analyzes extracted .rpt data for tethering analysis. If 2 masses are provided, 
+    peak areas from each mass are summed before computing final percent tethered.
     
     Args:
         df (pd.DataFrame): DataFrame containing extracted sample data.
@@ -814,7 +815,7 @@ def plot_bpi(dfm, smdc, scan_range, outdir="./", save=True):
         barcode=row.Barcode
         sample=row.Sample
         conc=row.Conc_uM
-        conc=conc.astype(float)*1000
+        conc=float(conc) * 1000
         conc_unit='nM'
         if conc is None:
             conc=row.Conc_nM
