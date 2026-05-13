@@ -350,7 +350,9 @@ def _draw_plate_heatmap(barcode='OTPARP1234-Eco1', df=None, wells='Well', values
     Side effects:
         Draws a plate heatmap with values as labels
     """
-        
+    if df is None:
+        raise ValueError("Must provide a dataframe to draw plate heatmap")
+
     df['Row']=df[wells].str[0]
     df['Col']=df[wells].str[1:]
     df.Col=df.Col.astype(int)
