@@ -3,3 +3,4 @@
 *.ipynb_checkpoints*
 *.csv
 process_data/2669_tethering_analysis/*
+*.png
