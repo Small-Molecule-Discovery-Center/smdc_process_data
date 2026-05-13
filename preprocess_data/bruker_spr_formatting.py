@@ -73,7 +73,7 @@ def create_nine_point_files(input='test.txt'):
     dmso_pct=df.iloc[4,0]
     backfill_p1=df.iloc[5,0]
     backfill_p2=df.iloc[6,0]
-    name, dmso, dmso_pct, backfill_p1, backfill_p2
+    # name, dmso, dmso_pct, backfill_p1, backfill_p2
     
     # read in data and format columns
     df=pd.read_excel(input, header=10)
@@ -143,7 +143,7 @@ def create_nine_point_files(input='test.txt'):
     cmpd_info.sample_name=cmpd_info.sample_name.astype(compcat)
     
     # sort by ascending compound concentration
-    cmpd_info=cmpd_info.sort_values(['plate', 'sample_name','real_conc'])
+    cmpd_info=cmpd_info.sort_values(['plate', 'channel', 'sample_name','real_conc'])
     compcat
     
     # create destination plate
@@ -173,7 +173,8 @@ def create_nine_point_files(input='test.txt'):
         dest.transfer_volume=dest.destination_well.map(dict(zip(plate_corr_wells, solv_corr_vols*len(channels_used))))
     
     # solvent correction plate 1 only, then add plate 2 and continue
-    dest=pd.concat([dest,dest2])
+    # Exclude all-NA incoming columns to avoid deprecated concat dtype behavior.
+    dest=pd.concat([dest, dest2.dropna(axis=1, how='all')], sort=False)
     # map blank locations and volumes where there is no dmso info
     dest.loc[dest.sample_name.isna(), 'sample_name']=dest.loc[dest.sample_name.isna(), 'destination_well'].map(dict(zip(plate_blank_wells, ['Blank']*len(plate_blank_wells))))
     dest.loc[dest.sample_name=='Blank', 'transfer_volume']=1000
@@ -209,7 +210,8 @@ def create_nine_point_files(input='test.txt'):
     for plate in dest.plate.unique():
         tmp=empty[~empty.destination_well.isin(dest[dest.plate==plate].destination_well)].copy()
         tmp['plate']=plate
-        dest=pd.concat([dest, tmp])
+        # Exclude all-NA incoming columns to avoid deprecated concat dtype behavior.
+        dest=pd.concat([dest, tmp.dropna(axis=1, how='all')], sort=False)
     
     # create well idx and sort dest df
     dest=dest.sort_values(['plate','destination_well'])
@@ -315,7 +317,8 @@ def create_nine_point_files(input='test.txt'):
     for plate_num in spr.plate.unique():
         spr[spr.plate==plate_num].drop(columns=['plate']).to_csv(f"{today}_{name}_bruker_plate_{plate_num}.csv", index=False, header=False, encoding='utf-8-sig')
         print(f"\nBruker plate {plate_num} saved to {today}_{name}_bruker_plate_{plate_num}.csv")
-    print('\n')
+    
+    return
 
 
 ###############################################################################
@@ -333,7 +336,7 @@ def _make_empty_plate():
     
 
 ###############################################################################
-def _draw_plate_heatmap(barcode='OTPARP1234-Eco1', df=None, wells='Well', values='SMDC_ID', labels='SMDC_ID', width=25, outdir=None):
+def _draw_plate_heatmap(barcode='OTPARP1234-Eco1', df=None, wells='Well', values='SMDC_ID', labels='SMDC_ID', width=25, outdir=None, show=True):
     """
     Draw a heatmap of the plate using a platemap excel style input as your df
     Args:
@@ -363,6 +366,8 @@ def _draw_plate_heatmap(barcode='OTPARP1234-Eco1', df=None, wells='Well', values
     sns.heatmap(pl, annot=plabels, fmt='s', linewidth=1, linecolor='white', ax=ax, cbar=False, annot_kws={"size": 7})
     ax.set_title(f"{barcode}");
     plt.tight_layout()
+    if show ==True:
+        plt.show()
     if outdir is not None:
         plt.savefig(os.path.join(outdir, barcode+'.png'), bbox_inches='tight')
         plt.close()
