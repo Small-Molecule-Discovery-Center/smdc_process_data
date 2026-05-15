@@ -225,6 +225,9 @@ def create_nine_point_files(input='test.txt'):
             print(f"removing {tmp.destination_well.iloc[0]} blanks")
             for col in ['sample_name', 'source_plate', 'source_well','transfer_volume']:
                 dest.loc[dest.well_idx.between(i,i+12, inclusive='left'), col]=np.nan
+        elif len(tmp.sample_name.unique().tolist())==2 and 'Blank' in tmp.sample_name.unique().tolist():
+            # print(f"replacing Blank with sample ID")
+            dest.loc[dest.well_idx.between(i,i+12, inclusive='left'), 'sample_name']=tmp.sample_name.replace('Blank',np.nan).bfill()
     
     # rename plate types
     if dmso:
@@ -368,9 +371,10 @@ def _draw_plate_heatmap(barcode='OTPARP1234-Eco1', df=None, wells='Well', values
     sns.heatmap(pl, annot=plabels, fmt='s', linewidth=1, linecolor='white', ax=ax, cbar=False, annot_kws={"size": 7})
     ax.set_title(f"{barcode}");
     plt.tight_layout()
-    if show ==True:
-        plt.show()
     if outdir is not None:
         plt.savefig(os.path.join(outdir, barcode+'.png'), bbox_inches='tight')
+    if show ==True:
+        plt.show()
+    else:
         plt.close()
 
