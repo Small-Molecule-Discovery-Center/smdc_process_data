@@ -19,6 +19,13 @@ A set of functions to preprocess various kinds of raw data for upload or further
 #### database_interactions
 Notebooks for querying the database, making plate maps and entering new data
 
+**Registering plates and wells (incl. daughter plates):** use `safe_register.py`.
+It connects to the test database `QB3_HiTS_nightly` unless you name `QB3_HiTS`,
+does a dry run (insert, report, roll back) unless you pass `save=True`, and puts
+plates and wells in together so a failure leaves nothing half-saved. The reshaping
+helpers it uses live in `inventory_registration.py`. Run the tests with
+`pytest database_interactions/`.
+
 #### preprocess_data
 Before uploading data to the HiTS db, reorganize or prepare for instrument use
 
