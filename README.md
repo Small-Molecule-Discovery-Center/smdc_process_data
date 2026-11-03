@@ -39,3 +39,24 @@ Data visualizations on SMDC activities over time
 
 #### data
 example data files for PAMPA and Bruker SPR
+
+### Install shared utilities
+
+From this checkout, run `python -m pip install -e .` (or
+`python -m pip install -e '.[tethering]'` for plotting dependencies).
+This is the canonical source of the `smdc-data-proc` distribution, formerly
+installed from data-proc. Reinstall from here in each consuming environment.
+Imports remain `import raw_data_parsers`, `import mysql_cnx`, and
+`from process_data import tethering_analysis`.
+
+`raw_data_parsers.extract_rpt_data(infile, samples_only=False, outdir="./")`
+extracts Xevo sample metadata and writes spectra to `outdir/samples`.
+The existing tethering analysis entry point delegates to this implementation.
+Its existing shell/grep-based extraction behavior is preserved.
+
+MySQL defaults to localhost and uses `mysql_user`, `mysql80_pwd`, and
+`mysql80_port`. Remote hosts use `mysql_user`, `mysql_pwd`, and `mysql_port`.
+The database defaults to `hits_db` or `QB3_HiTS`. Environment variables are
+read when creating an engine, so importing the module needs no credentials.
+Tethering analysis still uses the separate data-proc plate_maps/plot_curves
+helpers for database analysis and plotting.
