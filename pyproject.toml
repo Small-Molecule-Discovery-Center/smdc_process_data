@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "smdc-data-proc"
+version = "0.1.0.dev1"
+description = "SMDC laboratory data processing utilities"
+requires-python = ">=3.9"
+dependencies = ["numpy", "pandas", "SQLAlchemy", "PyMySQL"]
+
+[project.optional-dependencies]
+tethering = ["matplotlib", "seaborn", "Pillow"]
+
+[tool.setuptools]
+packages = ["process_data"]
+py-modules = ["raw_data_parsers", "mysql_cnx"]
