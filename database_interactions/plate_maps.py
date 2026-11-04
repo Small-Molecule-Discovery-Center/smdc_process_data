@@ -86,6 +86,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import logging
 import shutil
+import filecmp
 import re
 from sqlalchemy import bindparam, text
 
@@ -452,7 +453,9 @@ def make_platemaps_from_barcode(barcode='OTPARP1234-Eco1', outdir='./', cnx=None
         pass
 
     # format data
-    df['Row'] = df.IW_COORDINATES.str.slice(start=0, stop=1)
+    # Row is everything before the 2-digit column, so 1536-well rows AA-AF stay
+    # separate from row A.
+    df['Row'] = df.IW_COORDINATES.str.slice(stop=-2)
     df['Col'] = df.IW_COORDINATES.str.slice(start=-2).astype(int)
     df = df.rename(columns={'IW_COORDINATES': 'Well'})
     df['Plate'] = barcode
@@ -476,6 +479,8 @@ def make_platemaps_from_barcode(barcode='OTPARP1234-Eco1', outdir='./', cnx=None
                     df[col] = df[col].fillna(-99).astype(int)
                     aggfunc = 'mean'
                 tmpdf = df.pivot_table(index='Row', columns='Col', values=col, aggfunc=aggfunc)
+                # plate order A..Z then AA..AF, not the lexical A, AA, AB, ..., B
+                tmpdf = tmpdf.loc[sorted(tmpdf.index, key=lambda r: (len(r), r))]
                 tmpdf = tmpdf.replace('None', np.nan).replace(-99, np.nan)
                 tmpdf.index.name = col
                 tmpdf.to_excel(writer, sheet_name=col)
@@ -1261,10 +1266,9 @@ def make_dr_platemaps(dp, row, users, basedir=None, replace_dict=None, control_d
                                 'concentration': '[compound] uM', 'conc': '[compound] uM'})
     # Keep the scientist control annotations in the HiTS manifest. They are true
     # only for wells whose original block-0 text exactly matches control_dict.
-    # for col in ['Sci_PosControl', 'Sci_NegControl']:
-    #     if col not in dids.columns:
-    #         dids[col] = False
-    #     dids[col] = dids[col].fillna(False).astype(bool)
+    # Biomek worklists skip get_destination_plate_info, which is what normally
+    # adds these columns, so default them to False when they are missing.
+    dids = _ensure_control_flags(dids)
     dids = dids[['SMDC_ID', 'Lot', 'Source plate', 'Source well', 'Destination plate',
                  'Destination well', '[compound] uM', 'Assay ID',
                  'Sci_PosControl', 'Sci_NegControl']]
@@ -1508,8 +1512,7 @@ def get_lot_info(row, dids, maps, users, replace_vals):
     if len(dids[missing_mask]) > 0:
         logger.info('Getting lot info from user')
         ids = dids[missing_mask].SMDC_ID.astype(int).astype(str).unique().tolist()
-        lots = lookup_lot_by_user(ids=ids, users=users)
-        lot_map = lots.set_index("SMDC_ID")["Lot"]
+        lot_map = _unique_user_lots(lookup_lot_by_user(ids=ids, users=users))
         mask = dids["SMDC_ID"].notna() & dids["Lot"].isna()
         dids.loc[mask, "Lot"] = dids.loc[mask, "SMDC_ID"].map(lot_map)
 
@@ -1816,14 +1819,7 @@ def make_dr_platemaps_and_folders(infile='', users=[("Amanda", "Paulson")], base
             # to know which destination plates this folder's data covers.
             # Appended to rather than overwritten, since a folder may be filled
             # across several runs.
-            if os.path.exists(os.path.join(outdir, 'grid_num.txt')):
-                gn = pd.read_csv(os.path.join(outdir, 'grid_num.txt'))
-                gn = pd.concat([gn, gridnum])
-                gn = gn.drop_duplicates(keep='first')
-            else:
-                gn = gridnum
-            gn['grid_num'] = [x[0:50] for x in gn['grid_num']]  # HiTS barcode field caps at 50
-            gn.to_csv(os.path.join(outdir, 'grid_num.txt'), index=False)
+            _append_grid_num(outdir, gridnum)
 
             # move data files to folders
             logger.info('Copying data...')
@@ -1880,6 +1876,19 @@ def clean_up_folders(infile=None, basedir='./', delete_orig=False, share_root=No
     # read data (shared with make_dr_platemaps_and_folders)
     dp, info = _read_info_sheet(infile)
 
+    # Work out every move first and refuse to start if any would overwrite a
+    # different file already in loaded/ (e.g. an earlier batch with the same
+    # screen date). Identical files are fine: that is a rerun after an
+    # interrupted copy.
+    moves = _plan_loaded_moves(info, basedir)
+    conflicts = _loaded_conflicts(moves)
+    if conflicts:
+        raise FileExistsError(
+            "These files are already in loaded/ with different contents, so nothing "
+            "was moved or deleted. Rename the folder in toload_<n> or move it by hand:\n  "
+            + "\n  ".join(conflicts[:20])
+        )
+
     # delete original file from all_data or similar folder
     if delete_orig:
         for rdf in info.Raw_data_file.unique():
@@ -1892,7 +1901,70 @@ def clean_up_folders(infile=None, basedir='./', delete_orig=False, share_root=No
                 # something else.
                 os.remove(rdf)
 
-    # move each date from toload to loaded folders
+    # move each date from toload to loaded folders. Copy then remove, rather
+    # than shutil.move, so an interrupted run leaves the source intact.
+    for oldpath, newpath in moves:
+        logger.info(f'{oldpath} -> {newpath}')
+        os.makedirs(os.path.dirname(newpath), exist_ok=True)
+        shutil.copytree(oldpath, newpath, ignore=ignore_files, dirs_exist_ok=True)
+        shutil.rmtree(oldpath, ignore_errors=True)
+
+
+def _ensure_control_flags(dids):
+    """ Sci_PosControl / Sci_NegControl as booleans, False where missing.
+
+    Biomek worklists skip get_destination_plate_info, which is what normally
+    adds these columns.
+    """
+    dids = dids.copy()
+    for col in ['Sci_PosControl', 'Sci_NegControl']:
+        if col not in dids.columns:
+            dids[col] = False
+        dids[col] = dids[col].astype(object).where(dids[col].notna(), False).astype(bool)
+    return dids
+
+
+def _unique_user_lots(lots):
+    """ SMDC_ID -> Lot from lookup_lot_by_user, refusing to guess between lots.
+
+    Two users can each have registered a lot of the same compound. The same lot
+    twice is fine. Different lots mean this last-resort fallback cannot know
+    which one was pipetted, so it raises instead of picking one.
+    """
+    lots = lots.drop_duplicates()
+    conflicts = lots[lots.SMDC_ID.duplicated(keep=False)]
+    if not conflicts.empty:
+        detail = conflicts.groupby('SMDC_ID')['Lot'].apply(lambda x: sorted(x.tolist())).to_dict()
+        raise ValueError(
+            "More than one user registered a lot for these compounds, so the lot "
+            f"cannot be guessed: {detail}. Put the lot in the Info sheet "
+            "(Lot_info) or pass only the user who made this plate."
+        )
+    return lots.set_index("SMDC_ID")["Lot"]
+
+
+def _append_grid_num(outdir, gridnum):
+    """ Create or extend grid_num.txt, the manifest the HiTS loader reads to
+    know which destination plates this folder's data covers.
+
+    Appended to rather than overwritten, since a folder may be filled across
+    several runs. Read as text so an all-digit barcode keeps its leading zeros.
+    """
+    path = os.path.join(outdir, 'grid_num.txt')
+    gridnum = gridnum.astype(str)
+    if os.path.exists(path):
+        gn = pd.read_csv(path, dtype=str, keep_default_na=False)
+        gn = pd.concat([gn, gridnum]).drop_duplicates(keep='first')
+    else:
+        gn = gridnum
+    gn['grid_num'] = [str(x)[0:50] for x in gn['grid_num']]  # HiTS barcode field caps at 50
+    gn.to_csv(path, index=False)
+    return gn
+
+
+def _plan_loaded_moves(info, basedir):
+    """ (toload_<i>/<datadir>, loaded/<datadir>) pairs for clean_up_folders. """
+    moves = []
     for df, rpt in _iter_load_groups(info):
         for i, row in df.iterrows():
             if rpt:
@@ -1903,22 +1975,31 @@ def clean_up_folders(infile=None, basedir='./', delete_orig=False, share_root=No
             if not os.path.exists(toload):
                 logger.warning(f'No such folder, skipping: {toload}')
                 continue
-            if not os.path.exists(loaded):
-                os.makedirs(loaded)
-            logger.info(toload)
-            logger.info(loaded)
-
-            # Copy then remove, rather than shutil.move, so an interrupted run
-            # leaves the source intact.
-            for datadir in os.listdir(toload):
+            for datadir in sorted(os.listdir(toload)):
                 # skip macOS metadata that is not a real directory
-                if os.path.basename(datadir) == ".DS_Store" or os.path.basename(datadir).startswith('._'):
+                if datadir == ".DS_Store" or datadir.startswith('._'):
                     continue
-                oldpath = os.path.join(toload, datadir)
-                # oldpath=oldpath.replace('(','\(').replace(')','\)').replace(' ','\ ')
-                # loaded = loaded.replace('(','\(').replace(')','\)').replace(' ','\ ')
-                shutil.copytree(oldpath, os.path.join(loaded, datadir), ignore=ignore_files, dirs_exist_ok=True)
-                shutil.rmtree(oldpath, ignore_errors=True)
+                pair = (os.path.join(toload, datadir), os.path.join(loaded, datadir))
+                if pair not in moves:
+                    moves.append(pair)
+    return moves
+
+
+def _loaded_conflicts(moves):
+    """ Files a move would overwrite with different contents. """
+    conflicts = []
+    for oldpath, newpath in moves:
+        if not os.path.isdir(oldpath):
+            continue
+        for root, _, files in os.walk(oldpath):
+            for f in files:
+                if f == '.DS_Store' or f.startswith('._'):
+                    continue
+                src = os.path.join(root, f)
+                dst = os.path.join(newpath, os.path.relpath(src, oldpath))
+                if os.path.exists(dst) and not filecmp.cmp(src, dst, shallow=False):
+                    conflicts.append(dst)
+    return conflicts
 
 
 def ignore_files(dir, files):
