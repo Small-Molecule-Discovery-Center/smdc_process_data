@@ -1,7 +1,7 @@
 """Small end-to-end tests for extract_salts_solvates.run_pipeline.
 
 Uses tiny made-up reference tables, so no real HiTS data is needed.
-Run with:  pytest database_interactions/
+Run with:  pytest   (from the repo root)
 """
 
 import pandas as pd

@@ -24,7 +24,7 @@ before compound registration. It reads the salt/solvate reference tables
 (`INV_LOT_SALT`, `INV_LOT_SOLVATE`) from the database when you pass a SQLAlchemy
 `engine=` (SELECT only, in a read-only transaction), or from CSV exports of those
 tables, which also act as a fallback if the database read fails. Run the tests with
-`pytest database_interactions/test_extract_salts_solvates.py` (needs rdkit).
+`pytest tests/test_extract_salts_solvates.py` from the repo root (needs rdkit).
 
 #### preprocess_data
 Before uploading data to the HiTS db, reorganize or prepare for instrument use
