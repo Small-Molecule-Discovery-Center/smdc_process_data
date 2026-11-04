@@ -23,8 +23,7 @@ Notebooks for querying the database, making plate maps and entering new data
 It connects to the test database `QB3_HiTS_nightly` unless you name `QB3_HiTS`,
 does a dry run (insert, report, roll back) unless you pass `save=True`, and puts
 plates and wells in together so a failure leaves nothing half-saved. The reshaping
-helpers it uses live in `inventory_registration.py`. Run the tests with
-`pytest database_interactions/`.
+helpers it uses live in `inventory_registration.py`.
 
 **Preparing a HiTS data upload:** open `database_interactions/prepare_hits_upload.ipynb`
 (it follows Part C and E of the data upload SOP, including the EnVision barcode check).
@@ -74,3 +73,7 @@ The database defaults to `hits_db` or `QB3_HiTS`. Environment variables are
 read when creating an engine, so importing the module needs no credentials.
 Tethering analysis still uses the separate data-proc plate_maps/plot_curves
 helpers for database analysis and plotting.
+
+### Tests
+
+All tests live in `tests/`. Run them from the repo root with `pytest`.

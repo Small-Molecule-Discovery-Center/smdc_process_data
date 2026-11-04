@@ -23,7 +23,6 @@ try:
 except ModuleNotFoundError:
     sys.modules['seaborn'] = types.SimpleNamespace(set_theme=lambda *a, **k: None,
                                                    heatmap=lambda *a, **k: None)
-sys.path.insert(0, str(__import__('pathlib').Path(__file__).resolve().parent))
 
 import pandas as pd
 import plate_maps as pm

@@ -2,7 +2,7 @@
 
 Runs against an in-memory SQLite database that mimics the three INV_* tables
 (IP_BARCODE is NOCASE to mimic MySQL's default collation), so no HiTS connection
-is needed. Run with:  pytest test_plate_maps_lookup.py
+is needed. Run with:  pytest tests/test_plate_maps_lookup.py
 """
 import sys
 import types
@@ -21,7 +21,6 @@ try:
     import seaborn  # noqa: F401
 except ModuleNotFoundError:
     sys.modules['seaborn'] = types.SimpleNamespace(set_theme=lambda *a, **k: None, heatmap=lambda *a, **k: None)
-sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import numpy as np
 import pandas as pd
