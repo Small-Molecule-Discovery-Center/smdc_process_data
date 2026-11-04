@@ -849,6 +849,12 @@ def lookup_id_and_lot_by_plate_and_well(plates=[], wells=[]):
 ###############################################################################
 # SECTION 4: parsing the hand-written Excel plate maps
 ###############################################################################
+def _row_labels(n):
+    """ Plate row labels: A..P for 16, A..Z then AA..AF for 32. """
+    letters = [chr(ord('A') + i) for i in range(26)]
+    return (letters + ['A' + x for x in letters])[:n]
+
+
 def read_platemap_block(plate_map=None, block=0, value_name='SMDC_ID', size=384):
     """ Read one grid block out of a block-formatted plate map sheet.
 
@@ -891,14 +897,24 @@ def read_platemap_block(plate_map=None, block=0, value_name='SMDC_ID', size=384)
         raise ValueError(f"size must be 96, 384 or 1536; got {size}")
     cols = ['row']
     cols.extend(range(1, plate_cols + 1))
-    # Slice out this block's rows: stride is plate_rows+1 to skip the blank
-    # separator row. dropna(how='all') first, so blank rows inside the sheet do
-    # not shift the block boundaries. This means a sheet with an unexpected
-    # extra blank line still parses, but a sheet with an extra *populated* line
-    # silently misaligns every subsequent block.
+    # Slice out this block's rows. Each block after the first starts with its
+    # own header row (label, 1, 2, ..., n), so the stride is plate_rows + 1.
+    # dropna(how='all') first, so empty rows users add between blocks do not
+    # shift the boundaries. A layout with only a blank separator row and no
+    # header would shift every later block by one row, so the row labels are
+    # checked below rather than trusted.
     df = plate_map.dropna(how='all', axis='index').iloc[
         (plate_rows + 1) * block:(plate_rows + 1) * block + plate_rows, 0:plate_cols + 1]
     df.columns = cols
+    expected = _row_labels(plate_rows)
+    found = df['row'].astype(str).str.strip().str.upper().tolist()
+    if found != expected:
+        raise ValueError(
+            f"Block {block} of this plate map does not start at row A and run to row "
+            f"{expected[-1]} (found {found[:3]}...{found[-2:]}). Each block needs its own header "
+            "row (label, 1, 2, ...) above row A; empty rows between blocks are fine."
+        )
+    df['row'] = found
     df = df.melt(id_vars=['row'], value_vars=range(1, plate_cols + 1), ignore_index=True,
                  value_name=value_name, var_name='col')
     # Zero-pad so row + col == 'A01', matching HiTS well coordinates.
@@ -1219,17 +1235,16 @@ def make_dr_platemaps(dp, row, users, basedir=None, replace_dict=None, control_d
     _ = basedir  # accepted but unused; silences linters about the dead param
     # Control labels are annotations, not SMDC IDs. Add them to the replacement
     # map automatically so callers do not have to repeat them in replace_dict.
-    control_dict = dict(control_dict or {})
-    normalized_controls = {}
-    for key, value in control_dict.items():
-        key_norm = _norm_key(key)
-        value_norm = _norm_key(value)
-        normalized_controls[key_norm] = value_norm
+    # Keys are normalised only to recognise them ('sci_poscontrol' -> 
+    # 'Sci_PosControl'); labels are compared normalised in
+    # get_destination_plate_info but replaced using the text as typed.
+    normalized_controls = _normalize_control_dict(control_dict)
 
     replace_dict = dict(replace_dict or {})
-    for label in normalized_controls.values():
-        if label is not None:
-            replace_dict[label] = np.nan
+    for label in (control_dict or {}).values():
+        if label is not None and str(label).strip():
+            replace_dict[str(label)] = np.nan
+            replace_dict[str(label).strip()] = np.nan
     replace_dict, replace_vals = _build_replace_metadata(replace_dict)
     print(replace_dict)
 
@@ -1265,7 +1280,8 @@ def make_dr_platemaps(dp, row, users, basedir=None, replace_dict=None, control_d
     dids = dids.rename(columns={'Concentration': '[compound] uM', 'Concentration_uM': '[compound] uM',
                                 'concentration': '[compound] uM', 'conc': '[compound] uM'})
     # Keep the scientist control annotations in the HiTS manifest. They are true
-    # only for wells whose original block-0 text exactly matches control_dict.
+    # only for wells whose block-0 text matches a control_dict label (ignoring
+    # case, spaces and punctuation).
     # Biomek worklists skip get_destination_plate_info, which is what normally
     # adds these columns, so default them to False when they are missing.
     dids = _ensure_control_flags(dids)
@@ -1464,8 +1480,7 @@ def get_lot_info(row, dids, maps, users, replace_vals):
             dids = dids.merge(aids[['Destination well', 'Lot']], how='left')
         elif 'map' in source_plate_val:
             logger.info("Lot info from plate map")
-            ids = dids[dids.SMDC_ID.notna()].SMDC_ID.astype(int).astype(str).tolist()
-            plates = dids[dids['Source plate'].notna()]['Source plate'].tolist()
+            ids, plates = _id_plate_pairs(dids)
             lots = lookup_lot_by_plate_and_ic_id(ids=ids, plates=plates, replace_vals=replace_vals, matched=True)
             lots.SMDC_ID = lots.SMDC_ID.astype(float)
             dids = dids.merge(lots, how='left')
@@ -1484,8 +1499,7 @@ def get_lot_info(row, dids, maps, users, replace_vals):
     missing_mask = (~dids.SMDC_ID.isna()) & ((dids.Lot.isna()) | (dids.Lot == ''))
     if len(dids[missing_mask]) > 0:
         logger.info('Getting lot info from source plates and SMDC IDs')
-        ids = dids[missing_mask].SMDC_ID.astype(int).astype(str).unique().tolist()
-        plates = dids[dids['Source plate'].notna()]['Source plate'].unique().tolist()
+        ids, plates = _id_plate_pairs(dids[missing_mask])
         if len(plates) == 0:
             logger.info("No source plate info available, will lookup lots by user")
         else:
@@ -1586,8 +1600,9 @@ def get_destination_plate_info(dp, row, replace_dict, control_dict=None):
         row (Series): one Info row; supplies Grid_num (= destination barcode
             AND sheet name).
         replace_dict (dict): control/solvent labels to null out.
-        control_dict (dict, optional): normalized {'positive': label, 'negative': label}
-            control annotations to preserve as boolean output columns.
+        control_dict (dict, optional): {'Sci_PosControl': label, 'Sci_NegControl': label}
+            with labels already normalised by _normalize_control_dict (as
+            make_dr_platemaps passes them).
     Returns:
         tuple: (dids, maps) - the long-form destination frame with SMDC_ID,
             Destination well and Destination plate, plus the raw map sheet for
@@ -1637,6 +1652,13 @@ def get_destination_plate_info(dp, row, replace_dict, control_dict=None):
                     f"Annotated {n_matches} {kind} control well(s) on {grid_num} "
                     f"from label {label!r}."
                 )
+    # Control wells are annotations, not compounds. Null them here using the
+    # same normalised comparison as the flags, so 'no enzyme ' or 'NO ENZYME'
+    # in the map does not reach the float cast below.
+    control_labels = {v for v in (pos_label, neg_label) if v}
+    if control_labels:
+        dids.loc[map_labels.isin(control_labels), 'SMDC_ID'] = np.nan
+
     if sum(dids.SMDC_ID.astype(str).str.contains('-')) > 0:
         logger.info("Getting lots from SMDC IDs with dashes")
         dids[['SMDC_ID', 'Lot']] = dids.SMDC_ID.astype(str).str.split('-', expand=True)
@@ -1775,43 +1797,7 @@ def make_dr_platemaps_and_folders(infile='', users=[("Amanda", "Paulson")], base
                     dids = dids.drop_duplicates()
 
                     # Apply scientist-control flags LAST, after all plate/lot/source logic.
-                    # control_dict maps output column names to the annotations written in
-                    # block 0 of the original plate map
-                    if control_dict is not None:
-                        # Re-read block 0 from the original plate map so we still have the
-                        # scientist's annotations before they were replaced/converted during
-                        # SMDC_ID processing.
-                        map_sheet = dp[str(row.Grid_num)[0:31]].dropna(how='all')
-
-                        annotations = read_platemap_block(
-                            plate_map=map_sheet,
-                            block=0,
-                            value_name='annotation'
-                        )
-                        annotations['Destination well'] = annotations['row'] + annotations['col']
-
-                        for control_col, control_value in control_dict.items():
-                            # Start with False for every well in the final DR plate.
-                            dids[control_col] = False
-
-                            # Find the wells in the original plate map containing this control label.
-                            control_wells = annotations.loc[
-                                annotations['annotation'].astype(str).str.strip()
-                                == str(control_value).strip(),
-                                'Destination well'
-                            ]
-
-                            # Flag those wells in the final DR plate.
-                            dids.loc[
-                                dids['Destination well'].isin(control_wells),
-                                control_col
-                            ] = True
-
-                        logger.info(
-                            f"Final control flags for {row.Grid_num}: "
-                            f"Sci_PosControl={int(dids['Sci_PosControl'].sum())}, "
-                            f"Sci_NegControl={int(dids['Sci_NegControl'].sum())}"
-                        )
+                    dids = _apply_control_flags_from_map(dids, dp, row, control_dict)
 
                     dids.to_excel(os.path.join(outdir, f'{row.Grid_num}_DR_plate.xlsx'), index=False)
 
@@ -1908,6 +1894,66 @@ def clean_up_folders(infile=None, basedir='./', delete_orig=False, share_root=No
         os.makedirs(os.path.dirname(newpath), exist_ok=True)
         shutil.copytree(oldpath, newpath, ignore=ignore_files, dirs_exist_ok=True)
         shutil.rmtree(oldpath, ignore_errors=True)
+
+
+CONTROL_COLUMNS = {'sciposcontrol': 'Sci_PosControl', 'scinegcontrol': 'Sci_NegControl'}
+
+
+def _apply_control_flags_from_map(dids, dp, row, control_dict):
+    """ Re-read block 0 of the original plate map and set the control flags.
+
+    Runs after all plate/lot/source logic, so the scientist's annotations are
+    read before they were replaced during SMDC_ID processing. Labels match the
+    same normalised way as in get_destination_plate_info. Biomek worklists are
+    long format with no block 0, so their flags are left as they are.
+    """
+    if not control_dict:
+        return dids
+    if 'biomek' in _safe_lower(_series_get_ci(row, 'Source_plate', '')):
+        logger.info(f"{row.Grid_num}: Biomek worklist, no plate-map annotations to read for controls")
+        return dids
+    dids = dids.copy()
+    map_sheet = dp[str(row.Grid_num)[0:31]].dropna(how='all')
+    annotations = read_platemap_block(plate_map=map_sheet, block=0, value_name='annotation')
+    annotations['Destination well'] = annotations['row'] + annotations['col']
+    annotation_keys = annotations['annotation'].map(_norm_key)
+    for control_col, control_value in _normalize_control_dict(control_dict).items():
+        control_wells = annotations.loc[annotation_keys == control_value, 'Destination well']
+        dids[control_col] = dids['Destination well'].isin(control_wells)
+    logger.info(
+        f"Final control flags for {row.Grid_num}: "
+        f"Sci_PosControl={int(dids['Sci_PosControl'].sum())}, "
+        f"Sci_NegControl={int(dids['Sci_NegControl'].sum())}"
+    )
+    return dids
+
+
+def _normalize_control_dict(control_dict):
+    """ {'Sci_PosControl': 'No Enzyme'} -> {'Sci_PosControl': 'noenzyme'}.
+
+    Output keys are the canonical column names whatever their spelling in the
+    notebook; labels are lowercased alphanumerics for comparison only.
+    """
+    out = {}
+    for key, label in (control_dict or {}).items():
+        if label is None:
+            continue
+        out[CONTROL_COLUMNS.get(_norm_key(key), key)] = _norm_key(label)
+    return out
+
+
+def _id_plate_pairs(dids):
+    """ Unique (SMDC_ID, Source plate) pairs taken from the same rows.
+
+    lookup_lot_by_plate_and_ic_id(matched=True) zips ids with plates, so both
+    lists must come from the same wells in the same order.
+    """
+    if 'Source plate' not in dids.columns:
+        return [], []
+    plates = dids['Source plate'].astype(str).str.strip()
+    ok = dids.SMDC_ID.notna() & dids['Source plate'].notna() & ~plates.str.upper().isin(['', 'NA', 'NAN'])
+    pairs = list(dict.fromkeys(zip(dids.loc[ok, 'SMDC_ID'].astype(float).astype(int).astype(str), plates[ok])))
+    return [i for i, _ in pairs], [p for _, p in pairs]
 
 
 def _ensure_control_flags(dids):
