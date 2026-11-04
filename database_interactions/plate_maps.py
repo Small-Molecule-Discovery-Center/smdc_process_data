@@ -1812,14 +1812,18 @@ def make_dr_platemaps_and_folders(infile='', users=[("Amanda", "Paulson")], base
             gridnum = pd.DataFrame(row.Grid_num.split(';'), columns=['grid_num'])
             if dose_response:
                 for grid_num in gridnum.grid_num:
-                    row.Grid_num = grid_num
-                    dids = make_dr_platemaps(dp, row, users, replace_dict=replace_dict, control_dict=control_dict)
+                    # The group row joins every plate's Source_plate/Lot_info
+                    # with ';'. Use this plate's own Info row instead, so plates
+                    # sharing a raw file can still use different settings.
+                    plate_row = _plate_info_row(info, row, grid_num)
+                    dids = make_dr_platemaps(dp, plate_row, users, replace_dict=replace_dict, control_dict=control_dict)
                     dids = dids.drop_duplicates()
 
                     # Apply scientist-control flags LAST, after all plate/lot/source logic.
-                    dids = _apply_control_flags_from_map(dids, dp, row, control_dict)
+                    dids = _apply_control_flags_from_map(dids, dp, plate_row, control_dict)
 
-                    dids.to_excel(os.path.join(outdir, f'{row.Grid_num}_DR_plate.xlsx'), index=False)
+                    dids.to_excel(os.path.join(outdir, f'{grid_num}_DR_plate.xlsx'), index=False)
+                row.Grid_num = ';'.join(gridnum.grid_num)
 
             # create or modify grid_num.txt: the manifest the HiTS loader reads
             # to know which destination plates this folder's data covers.
@@ -1917,6 +1921,38 @@ def clean_up_folders(infile=None, basedir='./', delete_orig=False, share_root=No
 
 
 CONTROL_COLUMNS = {'sciposcontrol': 'Sci_PosControl', 'scinegcontrol': 'Sci_NegControl'}
+
+
+GROUP_COLUMNS = ['Raw_assay_ID', 'Assay_name', 'Date_of_screen', 'Raw_data_file']
+
+
+def _plate_info_row(info, group_row, grid_num):
+    """ The Info settings for one destination plate inside a load group.
+
+    _iter_load_groups joins every non-key column across the plates that share a
+    raw file, assay and date (e.g. Source_plate 'use map;use lots'). Folders
+    and copies are shared, but the per-plate settings must not be, so take
+    them from the plate's own Info row. Falls back to the group row if the
+    plate cannot be found exactly once.
+    """
+    out = group_row.copy()
+    out['Grid_num'] = grid_num
+    keys = [c for c in GROUP_COLUMNS if c in info.columns and c in group_row.index]
+    same_group = pd.Series(True, index=info.index)
+    for c in keys:
+        same_group &= info[c].astype(str) == str(group_row[c])
+    has_plate = info['Grid_num'].astype(str).map(
+        lambda v: grid_num in [x.strip() for x in v.split(';')])
+    match = info[same_group & has_plate]
+    if len(match) != 1:
+        if len(match) > 1:
+            logger.warning(f"{grid_num} is on {len(match)} Info rows; using the joined settings")
+        return out
+    own = match.iloc[0]
+    for c in own.index:
+        if c not in keys and c != 'Grid_num':
+            out[c] = own[c]
+    return out
 
 
 def _apply_control_flags_from_map(dids, dp, row, control_dict):

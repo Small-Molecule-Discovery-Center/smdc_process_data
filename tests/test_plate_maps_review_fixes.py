@@ -165,3 +165,49 @@ def test_id_plate_pairs_come_from_the_same_wells():
                          'Source plate': ['PA', 'PB', 'PA', 'NA', 'PC']})
     assert pm._id_plate_pairs(dids) == (['5', '6'], ['PA', 'PB'])
     assert pm._id_plate_pairs(pd.DataFrame({'SMDC_ID': [1.0]})) == ([], [])
+
+
+def _grouped_info():
+    info = pd.DataFrame({
+        'Raw_assay_ID': [2863, 2863, 2863], 'Assay_name': ['A'] * 3, 'Date_of_screen': [20260101] * 3,
+        'Raw_data_file': ['run.csv'] * 3, 'Grid_num': ['P1', 'P2', 'P3;P4'],
+        'Source_plate': ['use map', 'use lots', 'XYZ-MA01'], 'Lot_info': ['use map', '', '']})
+    (group, _), = list(pm._iter_load_groups(info))
+    return info, group.iloc[0]
+
+
+def test_each_plate_gets_its_own_info_settings():
+    info, row = _grouped_info()
+    assert row.Source_plate == 'use map;use lots;XYZ-MA01'   # what the group row carries
+    p1 = pm._plate_info_row(info, row, 'P1')
+    p2 = pm._plate_info_row(info, row, 'P2')
+    p4 = pm._plate_info_row(info, row, 'P4')
+    assert (p1.Grid_num, p1.Source_plate, p1.Lot_info) == ('P1', 'use map', 'use map')
+    assert (p2.Source_plate, p2.Lot_info) == ('use lots', '')
+    assert (p4.Grid_num, p4.Source_plate) == ('P4', 'XYZ-MA01')   # plate listed with another on one Info row
+    assert row.Grid_num == 'P1;P2;P3;P4'                            # group row left alone
+
+
+def test_plate_not_found_falls_back_to_group_row():
+    info, row = _grouped_info()
+    out = pm._plate_info_row(info, row, 'P9')
+    assert out.Grid_num == 'P9' and out.Source_plate == row.Source_plate
+
+
+def test_folder_pipeline_passes_each_plate_its_own_row(tmp_path, monkeypatch):
+    info, _ = _grouped_info()
+    share = tmp_path / 'share'
+    share.mkdir()
+    (share / 'run.csv').write_text('data')
+    seen = {}
+
+    def fake_make(dp, row, users, **k):
+        seen[row.Grid_num] = row.Source_plate
+        return pd.DataFrame({'Destination well': ['A01'], 'Sci_PosControl': [False], 'Sci_NegControl': [False]})
+    monkeypatch.setattr(pm, '_read_info_sheet', lambda infile: ({}, info))
+    monkeypatch.setattr(pm, 'make_dr_platemaps', fake_make)
+    pm.make_dr_platemaps_and_folders('info.xlsx', basedir=str(tmp_path / 'out'), share_root=str(share))
+    assert seen == {'P1': 'use map', 'P2': 'use lots', 'P3': 'XYZ-MA01', 'P4': 'XYZ-MA01'}
+    folder = next((tmp_path / 'out').glob('2863*/toload_0/20260101'))
+    assert (folder / 'grid_num.txt').read_text().split() == ['grid_num', 'P1', 'P2', 'P3', 'P4']
+    assert (folder / 'run.csv').exists()
