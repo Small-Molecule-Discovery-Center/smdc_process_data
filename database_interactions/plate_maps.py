@@ -63,8 +63,9 @@ ENVIRONMENT ASSUMPTIONS (these will bite a new user first)
     put this folder on sys.path).
   * HiTS is reachable through mysql_cnx (by default localhost, i.e. an SSH
     tunnel). Lookups read from QB3_HiTS unless `hits_db` is set.
-  * Raw instrument data is reachable at the SMB mount `/Volumes/Shared/`
-    (override with the `smdc_share_root` environment variable).
+  * Raw instrument data is on the Montreal share, found by default_share_root():
+    `/Volumes/Shared/` on macOS, `Z:` (`/mnt/z/` in WSL) on Windows. Pass
+    `share_root=` or set `smdc_share_root` for any other mount.
   * It is meant to be driven from a notebook: importing it configures logging,
     and make_dr_platemaps_and_folders calls the notebook builtin `display()`.
     Nothing prompts on stdin, so the pipeline itself runs unattended.
@@ -113,8 +114,26 @@ from mysql_cnx import create_mysql_cnx
 # test database, which is right for writes but stale for plate lookups).
 READ_DB = os.environ.get('hits_db') or 'QB3_HiTS'
 
-# Root of the mounted SMDC file share that holds raw instrument data.
-SHARE_ROOT = os.environ.get('smdc_share_root') or '/Volumes/Shared/'
+def default_share_root():
+    """Where the Montreal share (raw instrument data) is mounted on this machine.
+
+    Order: the `smdc_share_root` environment variable if set; else the first
+    of the standard mounts that exists: `/Volumes/Shared/` (macOS) or
+    `/mnt/z/` (WSL, i.e. Windows drive Z:); else `Z:/` on native Windows.
+    Pass `share_root=` to make_dr_platemaps_and_folders / clean_up_folders to
+    use a different drive.
+    """
+    env = os.environ.get('smdc_share_root')
+    if env:
+        return env
+    for candidate in ('/Volumes/Shared/', '/mnt/z/'):
+        if os.path.isdir(candidate):
+            return candidate
+    if os.name == 'nt':
+        return 'Z:/'
+    raise FileNotFoundError(
+        "Can't find the Montreal share. Mount it (macOS: /Volumes/Shared, Windows/WSL: Z: = /mnt/z) "
+        "or pass share_root='<mount point>' (or set the smdc_share_root environment variable).")
 
 
 def _connect():
@@ -1027,8 +1046,8 @@ def _normalize_share_path(raw):
     Args:
         raw (str): the Raw_data_file cell.
     Returns:
-        str: path relative to /Volumes/Shared/, with no leading slash, suitable
-            for os.path.join(SHARE_ROOT, result).
+        str: path relative to the share root, with no leading slash, suitable
+            for os.path.join(share_root, result).
 
     Every branch slices exactly len(prefix). The 'Montreal/Shared/' branch used
     to slice [17:] against a 16-character prefix, eating the first character of
@@ -1048,6 +1067,8 @@ def _normalize_share_path(raw):
         p = p[7:]
     elif p.startswith('/Volumes/Shared/'):
         p = p[16:]
+    elif re.match(r'^/mnt/[A-Za-z]/', p):
+        p = p[7:]  # WSL view of a Windows drive, e.g. /mnt/z/ for Z:
     elif p.lower().startswith('smb://montreal.ucsf.edu/shared/'):
         p = p[31:]
     elif p.startswith('smb://montreal/Shared/'):
@@ -1681,7 +1702,7 @@ def handle_zero_concentrations(dids):
 
 ###############################################################################
 def make_dr_platemaps_and_folders(infile='', users=[("Amanda", "Paulson")], basedir='./', dose_response=True,
-                                  replace_dict=None, control_dict=None):
+                                  replace_dict=None, control_dict=None, share_root=None):
     """
     Create an excel file with dose response plate information for DR assay upload
     to HiTS. Each sheet in the input file should be labeled with the destination
@@ -1700,6 +1721,8 @@ def make_dr_platemaps_and_folders(infile='', users=[("Amanda", "Paulson")], base
             {'positive': 'Positive Control', 'negative': 'Negative Control'}.
             These labels are converted to Sci_PosControl / Sci_NegControl boolean
             columns in each *_DR_plate.xlsx output.
+        share_root (str, optional): where the Montreal share is mounted, e.g.
+            'Z:/', '/mnt/z/' or '/Volumes/Shared/'. Default: default_share_root().
     Returns:
         info (DataFrame): the parsed Info sheet, as a record of what was done.
 
@@ -1707,7 +1730,8 @@ def make_dr_platemaps_and_folders(infile='', users=[("Amanda", "Paulson")], base
         * creates <basedir>/<assay_id>_<assay_name>/toload_<i>/<date>/
         * writes <grid_num>_DR_plate.xlsx into it (dose_response only)
         * writes/updates grid_num.txt listing the plates in that folder
-        * copies the raw instrument file in from /Volumes/Shared/
+        * copies the raw instrument file in from the Montreal share
+          (share_root, default: default_share_root())
 
     Interactive: make_dr_platemaps may prompt on stdin, and display() assumes a
     notebook. Grouping is per Raw_data_file, since one instrument file may cover
@@ -1721,6 +1745,7 @@ def make_dr_platemaps_and_folders(infile='', users=[("Amanda", "Paulson")], base
     """
 
     # read plate layout file (shared with clean_up_folders)
+    share_root = share_root or default_share_root()
     dp, info = _read_info_sheet(infile)
 
     # One instrument file may back several plates, so group by file.
@@ -1807,7 +1832,7 @@ def make_dr_platemaps_and_folders(infile='', users=[("Amanda", "Paulson")], base
             row.Raw_data_file = _normalize_share_path(row.Raw_data_file)
             logger.info(row.Raw_data_file)
 
-            origfile = os.path.join(SHARE_ROOT, row.Raw_data_file)
+            origfile = os.path.join(share_root, row.Raw_data_file)
             fname = row.Raw_data_file.rsplit('/', 1)[-1]
             outfile = os.path.join(outdir, fname)
             logger.info(f'{origfile} -> {outfile}')
@@ -1829,7 +1854,7 @@ def make_dr_platemaps_and_folders(infile='', users=[("Amanda", "Paulson")], base
 ###############################################################################
 # SECTION 7: post-ingest housekeeping
 ###############################################################################
-def clean_up_folders(infile=None, basedir='./', delete_orig=False):
+def clean_up_folders(infile=None, basedir='./', delete_orig=False, share_root=None):
     """ After data is uploaded into HiTS, delete files from all_data (optional)
     and move each dated folder from toload to loaded.
 
@@ -1844,6 +1869,8 @@ def clean_up_folders(infile=None, basedir='./', delete_orig=False):
         delete_orig (bool): whether to delete the original data from its
             location on the share. Irreversible; leave False unless the copy in
             loaded/ is confirmed good.
+        share_root (str, optional): where the Montreal share is mounted; only
+            used with delete_orig=True. Default: default_share_root().
 
     Folder locations are computed with the same helpers the pipeline uses
     (_read_info_sheet, _iter_load_groups, _assay_dir_name), so the two cannot
@@ -1857,7 +1884,7 @@ def clean_up_folders(infile=None, basedir='./', delete_orig=False):
     if delete_orig:
         for rdf in info.Raw_data_file.unique():
             # Same path normalisation the pipeline used to find the file.
-            rdf = os.path.join(SHARE_ROOT, _normalize_share_path(rdf))
+            rdf = os.path.join(share_root or default_share_root(), _normalize_share_path(rdf))
             logger.info(rdf)
             if os.path.exists(rdf):
                 # os.remove rather than os.system("rm ..."): no shell involved,

@@ -192,3 +192,17 @@ def test_fill_control_lots(tmp_path):
 def test_source_plate_barcodes():
     info = pd.DataFrame({'Source_plate': ['X-MA01; Y-Eco1', 'use lots', None, 'X-MA01', 'n.a.']})
     assert pm.source_plate_barcodes(info) == ['X-MA01', 'Y-Eco1']
+
+
+def test_share_root_env_and_standard_mounts(monkeypatch, tmp_path):
+    monkeypatch.setenv('smdc_share_root', str(tmp_path))
+    assert pm.default_share_root() == str(tmp_path)
+    monkeypatch.delenv('smdc_share_root')
+    real_isdir = pm.os.path.isdir
+    monkeypatch.setattr(pm.os.path, 'isdir', lambda p: p == '/mnt/z/' or (p != '/Volumes/Shared/' and real_isdir(p)))
+    assert pm.default_share_root() == '/mnt/z/'
+
+
+def test_wsl_and_windows_paths_normalize():
+    assert pm._normalize_share_path('/mnt/z/SMDC/run.csv') == 'SMDC/run.csv'
+    assert pm._normalize_share_path(r'Z:\SMDC\run.csv') == 'SMDC/run.csv'

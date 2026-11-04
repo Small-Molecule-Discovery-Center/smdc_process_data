@@ -26,7 +26,8 @@ etc. work without any `sys.path` edits.
   plate-order check, fix duplicate source plates, spot-check, and clean up after upload.
 - **`plate_maps.py`**: builds plate-map workbooks from HiTS and the `toload` folders. It only
   reads from HiTS (production `QB3_HiTS` unless `hits_db` is set). Raw data is read from
-  `/Volumes/Shared/` unless `smdc_share_root` is set.
+  the Montreal share, found automatically at `/Volumes/Shared/` (Mac) or `Z:` /
+  `/mnt/z/` (Windows/WSL). For another drive, pass `share_root=` or set `smdc_share_root`.
 - **`check_grid_num.py`**: checks each `grid_num.txt` against the plates and barcodes in the
   EnVision export. Also runs on the command line: `python check_grid_num.py ROOT -o report.csv`.
 - **`safe_register.py`**: register plates and wells (including daughter plates). It connects to
