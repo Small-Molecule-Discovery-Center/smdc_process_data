@@ -1904,3 +1904,134 @@ def ignore_files(dir, files):
         list: names for copytree to skip.
     """
     return [f for f in files if f == '.DS_Store' or f.startswith('._')]
+
+###############################################################################
+# SECTION 7: fixing up *_DR_plate.xlsx files before upload
+#
+# Used by prepare_hits_upload.ipynb steps 4 and 5. Everything that edits files
+# is a dry run unless write=True.
+###############################################################################
+def dr_plate_files(outdir, assay_ids):
+    """ Yield every *_DR_plate.xlsx under outdir for the given assay IDs.
+
+    Folders are matched by name prefix (`<assay id>_<assay name>`). Anything
+    under a `loaded` folder and macOS `._` sidecar files are skipped.
+
+    Args:
+        outdir (str): the upload folder (the notebook's OUTDIR).
+        assay_ids (list of str): assay IDs, e.g. ['2863', '2865'].
+    """
+    assay_ids = tuple(str(a) for a in assay_ids)
+    for d in sorted(os.listdir(outdir)):
+        if not d.startswith(assay_ids):
+            continue
+        for root, _, files in os.walk(os.path.join(outdir, d)):
+            if 'loaded' in root:
+                continue
+            for f in sorted(files):
+                if f.endswith('DR_plate.xlsx') and not f.startswith('._'):
+                    yield os.path.join(root, f)
+
+
+def find_duplicate_source_plates(outdir, assay_ids):
+    """ List compounds that appear with more than one source plate/well.
+
+    Args:
+        outdir (str): the upload folder.
+        assay_ids (list of str): assay IDs to check.
+    Returns:
+        DataFrame with columns Plate (the DR file), SMDC_ID and SPlateWell, a
+        list of "<source plate> <source well>" entries for that compound.
+    """
+    frames = []
+    for path in dr_plate_files(outdir, assay_ids):
+        t = pd.read_excel(path, engine='openpyxl')[['SMDC_ID', 'Source plate', 'Source well']].drop_duplicates()
+        t = t[t.SMDC_ID.duplicated(keep=False)].copy()
+        t['Plate'] = path
+        frames.append(t)
+    cols = ['Plate', 'SMDC_ID', 'SPlateWell']
+    if not frames or all(f.empty for f in frames):
+        return pd.DataFrame(columns=cols)
+    dups = pd.concat(frames)
+    dups['SPlateWell'] = dups['Source plate'].astype(str) + ' ' + dups['Source well'].astype(str)
+    dups = dups.pivot_table(index=['Plate', 'SMDC_ID'], values='SPlateWell', aggfunc=list)
+    return dups.sort_values('Plate').reset_index()[cols]
+
+
+def remove_duplicate_source_plates(dups, keep=None, write=False):
+    """ Keep one source plate/well per duplicated compound and drop the others.
+
+    Args:
+        dups (DataFrame): output of find_duplicate_source_plates.
+        keep (list of int): for each row of dups, in order, the position of the
+            RIGHT entry in its SPlateWell list. Defaults to 0 for every row.
+        write (bool): False (default) only reports; True saves the files.
+    Returns:
+        dict: DR file path -> (rows before, rows after).
+    """
+    dups = dups.reset_index(drop=True)
+    keep = [0] * len(dups) if keep is None else list(keep)
+    if len(keep) != len(dups):
+        raise ValueError(f"keep has {len(keep)} entries but dups has {len(dups)} rows")
+    changes = {}
+    for plate in dups.Plate.unique():
+        t = pd.read_excel(plate, engine='openpyxl')
+        before = len(t)
+        for i, row in dups[dups.Plate == plate].iterrows():
+            for j, entry in enumerate(row.SPlateWell):
+                if j == keep[i]:
+                    continue
+                src_plate, src_well = entry.rsplit(' ', 1)
+                t = t[~((t.SMDC_ID == row.SMDC_ID) & (t['Source plate'] == src_plate)
+                        & (t['Source well'] == src_well))]
+        changes[plate] = (before, len(t))
+        logger.info(f"{plate}: {before} -> {len(t)} rows")
+        if write:
+            t.to_excel(plate, index=False)
+    if not write:
+        logger.info("Dry run: pass write=True to save.")
+    return changes
+
+
+def fill_control_lots(outdir, assay_ids, control_lots, write=False):
+    """ Set the Lot of control compounds in every DR file for these assays.
+
+    Empty cells are written as the literal 'NA' the loader expects.
+
+    Args:
+        outdir (str): the upload folder.
+        assay_ids (list of str): assay IDs to fix.
+        control_lots (dict): {SMDC_ID: lot}.
+        write (bool): False (default) only reports; True saves the files.
+    Returns:
+        list of str: the DR files that were (or would be) changed.
+    """
+    paths = []
+    for path in dr_plate_files(outdir, assay_ids):
+        t = pd.read_excel(path, engine='openpyxl')
+        for smdc, lot in control_lots.items():
+            t.loc[t.SMDC_ID == smdc, 'Lot'] = lot
+        t = t.fillna('NA')
+        paths.append(path)
+        logger.info(path)
+        if write:
+            t.to_excel(path, index=False)
+    if not write:
+        logger.info("Dry run: pass write=True to save.")
+    return paths
+
+
+
+def source_plate_barcodes(info):
+    """ Real plate barcodes listed in an Info tab's Source_plate column.
+
+    Splits on ';' and drops the dispatch keywords ("use lots", "use map",
+    "use echo/biomek", "n.a."). Order is preserved, duplicates removed.
+    """
+    out = []
+    for v in info['Source_plate'].dropna().astype(str):
+        for b in v.split(';'):
+            b = b.strip()
+            if b and not b.lower().startswith(('use ', 'n.a')) and b not in out:
+                out.append(b)
+    return out

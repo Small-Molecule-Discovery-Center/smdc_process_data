@@ -686,5 +686,30 @@ def main(argv=None) -> int:
     return 1 if any(r.verdict in flagged for r in results) else 0
 
 
+def check_upload_folder(outdir, summary_name="folder_summary.csv", detail_name="folder_plate_details.csv"):
+    """Run the audit on an upload folder and return the folders that are not OK.
+
+    Notebook entry point (prepare_hits_upload.ipynb step 3). Writes the two
+    report CSVs into outdir, replacing any from an earlier run, and returns the
+    summary rows whose verdict is not OK (empty means everything matched).
+    Raises FileNotFoundError if no grid_num.txt folders were found.
+    """
+    import pandas as pd
+
+    summary_csv = os.path.join(outdir, summary_name)
+    detail_csv = os.path.join(outdir, detail_name)
+    if os.path.exists(summary_csv):
+        os.remove(summary_csv)  # never read a stale report from an earlier run
+    main([outdir, "-o", summary_csv, "-d", detail_csv])
+    if not os.path.exists(summary_csv):
+        raise FileNotFoundError(f"No grid_num.txt folders found under {outdir}. Did step 2 run?")
+    summary = pd.read_csv(summary_csv)
+    problems = summary[summary.verdict != "OK"].reset_index(drop=True)
+    if problems.empty:
+        print("All folders OK.")
+    else:
+        print(f"{len(problems)} folder(s) need attention before upload:")
+    return problems
+
 if __name__ == "__main__":
     sys.exit(main())

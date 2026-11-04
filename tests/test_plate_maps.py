@@ -143,3 +143,52 @@ except ValueError as e:
     print(f"\nread_platemap_block(size=1596) -> ValueError: {e}")
 
 print("\nALL SMOKE TESTS PASSED")
+
+
+def _dr_folder(tmp_path):
+    d = tmp_path / '2863_test' / 'toload_0' / '20260101'
+    d.mkdir(parents=True)
+    (tmp_path / '2863_test' / 'loaded').mkdir()
+    pd.DataFrame({'SMDC_ID': [5, 5, 6, 7], 'Lot': [1, 1, 1, None],
+                  'Source plate': ['A', 'B', 'A', 'A'],
+                  'Source well': ['A01', 'A02', 'A03', 'A04']}).to_excel(d / 'P1_DR_plate.xlsx', index=False)
+    pd.DataFrame({'SMDC_ID': [9]}).to_excel(tmp_path / '2863_test' / 'loaded' / 'old_DR_plate.xlsx', index=False)
+    return d / 'P1_DR_plate.xlsx'
+
+
+def test_dr_plate_files_skips_loaded(tmp_path):
+    path = _dr_folder(tmp_path)
+    assert list(pm.dr_plate_files(str(tmp_path), ['2863'])) == [str(path)]
+    assert list(pm.dr_plate_files(str(tmp_path), ['9999'])) == []
+
+
+def test_find_and_remove_duplicate_source_plates(tmp_path):
+    path = _dr_folder(tmp_path)
+    dups = pm.find_duplicate_source_plates(str(tmp_path), ['2863'])
+    assert dups.SMDC_ID.tolist() == [5]
+    assert dups.SPlateWell.iloc[0] == ['A A01', 'B A02']
+
+    assert pm.remove_duplicate_source_plates(dups, keep=[1]) == {str(path): (4, 3)}
+    assert len(pd.read_excel(path)) == 4            # dry run left the file alone
+
+    pm.remove_duplicate_source_plates(dups, keep=[1], write=True)
+    left = pd.read_excel(path)
+    assert left[left.SMDC_ID == 5]['Source plate'].tolist() == ['B']
+
+
+def test_find_duplicates_empty(tmp_path):
+    (tmp_path / '2863_test').mkdir()
+    assert pm.find_duplicate_source_plates(str(tmp_path), ['2863']).empty
+
+
+def test_fill_control_lots(tmp_path):
+    path = _dr_folder(tmp_path)
+    assert pm.fill_control_lots(str(tmp_path), ['2863'], {7: 3}) == [str(path)]
+    assert pd.read_excel(path).loc[3, 'Lot'] != 3   # dry run
+    pm.fill_control_lots(str(tmp_path), ['2863'], {7: 3}, write=True)
+    assert pd.read_excel(path).loc[3, 'Lot'] == 3
+
+
+def test_source_plate_barcodes():
+    info = pd.DataFrame({'Source_plate': ['X-MA01; Y-Eco1', 'use lots', None, 'X-MA01', 'n.a.']})
+    assert pm.source_plate_barcodes(info) == ['X-MA01', 'Y-Eco1']
