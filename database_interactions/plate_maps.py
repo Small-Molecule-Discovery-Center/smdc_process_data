@@ -89,6 +89,7 @@ import shutil
 import filecmp
 import re
 from sqlalchemy import bindparam, text
+from sqlalchemy.exc import DBAPIError
 
 import logging
 
@@ -138,8 +139,25 @@ def default_share_root():
 
 
 def _connect():
-    """Open a read connection to HiTS (see READ_DB)."""
-    return create_mysql_cnx(db=READ_DB)
+    """Open a read connection to HiTS (see READ_DB) and check it works.
+
+    create_engine is lazy, so a dead SSH tunnel would otherwise only show up
+    at the first query, or worse, inside a lookup whose error is handled.
+    Fail here instead, with a message that names the likely cause.
+    """
+    engine = create_mysql_cnx(db=READ_DB)
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("select 1"))
+    except DBAPIError as e:
+        engine.dispose()
+        url = engine.url
+        raise ConnectionError(
+            f"Cannot reach HiTS ({url.database} on {url.host}:{url.port}). "
+            "Is the SSH tunnel up and are the mysql_* environment variables right? "
+            f"Original error: {e.orig}"
+        ) from e
+    return engine
 
 # Excel-style plate row labels, in order: A..Z then AA..AF.
 # Slices of this list give the rows for each plate format:
@@ -1421,6 +1439,8 @@ def get_source_plate_info(row, dids, maps, cnx, replace_vals):
                     replace_vals=replace_vals
                 )
                 dids = dids.merge(plates, how='left')
+            except DBAPIError:
+                raise  # a database/connection error must stop the run, not become 'NA'
             except Exception as e:
                 logger.warning(f"Error looking up plates by lot num: {e}")
                 dids['Source plate'] = 'NA'

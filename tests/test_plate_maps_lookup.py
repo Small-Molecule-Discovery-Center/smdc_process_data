@@ -100,7 +100,36 @@ def test_lookups_are_parameterised(monkeypatch, tmp_path):
 
 def test_read_db_defaults_to_production(monkeypatch):
     calls = {}
-    monkeypatch.setattr(pm, 'create_mysql_cnx', lambda **k: calls.update(k))
+    sqlalchemy = __import__('sqlalchemy')
+
+    def fake(**k):
+        calls.update(k)
+        return sqlalchemy.create_engine('sqlite://')
+    monkeypatch.setattr(pm, 'create_mysql_cnx', fake)
     pm._connect()
     assert calls == {'db': pm.READ_DB}
     assert pm.READ_DB in ('QB3_HiTS', __import__('os').environ.get('hits_db'))
+
+
+def test_connect_fails_loudly_when_hits_is_unreachable(monkeypatch, tmp_path):
+    # A path in a missing folder makes sqlite fail on first connect, the way a
+    # dead SSH tunnel makes MySQL fail: create_engine itself succeeds.
+    sqlalchemy = __import__('sqlalchemy')
+    bad = sqlalchemy.create_engine(f"sqlite:///{tmp_path}/no/such/dir/x.db")
+    monkeypatch.setattr(pm, 'create_mysql_cnx', lambda **k: bad)
+    with pytest.raises(ConnectionError, match='SSH tunnel'):
+        pm._connect()
+
+
+def test_db_error_in_lot_lookup_is_not_turned_into_na(monkeypatch):
+    from sqlalchemy.exc import OperationalError
+
+    def dead(**k):
+        raise OperationalError('select', {}, Exception('Lost connection'))
+    monkeypatch.setattr(pm, 'lookup_plate_by_lot_num', dead)
+    dids = pd.DataFrame({'SMDC_ID': [5.0], 'Lot': [1.0], 'Destination well': ['A01']})
+    row = pd.Series({'Source_plate': 'use lots', 'Grid_num': 'P1'})
+    lots = pd.DataFrame({'row': ['A'], 'col': ['01'], 'Lot': [1.0]})
+    monkeypatch.setattr(pm, 'read_platemap_block', lambda **k: lots.copy())
+    with pytest.raises(OperationalError):
+        pm.get_source_plate_info(row, dids.drop(columns='Lot'), None, None, [])
