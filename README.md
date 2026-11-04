@@ -26,7 +26,9 @@ plates and wells in together so a failure leaves nothing half-saved. The reshapi
 helpers it uses live in `inventory_registration.py`. Run the tests with
 `pytest database_interactions/`.
 
-**Plate maps:** `plate_maps.py` (also in `database_interactions/`) builds plate-map
+**Preparing a HiTS data upload:** open `database_interactions/prepare_hits_upload.ipynb`
+(it follows Part C and E of the data upload SOP, including the EnVision barcode check).
+`plate_maps.py` (also in `database_interactions/`) builds plate-map
 workbooks from HiTS and the `toload` folders for data upload. It only reads from
 HiTS (production `QB3_HiTS` unless `hits_db` is set). Raw data is read from
 `/Volumes/Shared/` unless `smdc_share_root` is set.
