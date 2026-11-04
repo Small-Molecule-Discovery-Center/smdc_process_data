@@ -17,20 +17,23 @@ A set of functions to preprocess various kinds of raw data for upload or further
 [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Small-Molecule-Discovery-Center/smdc_process_data/blob/main/Plot_LCMS_Spectra.ipynb)
 
 #### database_interactions
-Notebooks for querying the database, making plate maps and entering new data
+Notebooks and modules for querying HiTS, making plate maps and entering new data.
+Open notebooks from this folder (after `pip install -e .`, see below) so `import plate_maps`
+etc. work without any `sys.path` edits.
 
-**Registering plates and wells (incl. daughter plates):** use `safe_register.py`.
-It connects to the test database `QB3_HiTS_nightly` unless you name `QB3_HiTS`,
-does a dry run (insert, report, roll back) unless you pass `save=True`, and puts
-plates and wells in together so a failure leaves nothing half-saved. The reshaping
-helpers it uses live in `inventory_registration.py`.
-
-**Preparing a HiTS data upload:** open `database_interactions/prepare_hits_upload.ipynb`
-(it follows Part C and E of the data upload SOP, including the EnVision barcode check).
-`plate_maps.py` (also in `database_interactions/`) builds plate-map
-workbooks from HiTS and the `toload` folders for data upload. It only reads from
-HiTS (production `QB3_HiTS` unless `hits_db` is set). Raw data is read from
-`/Volumes/Shared/` unless `smdc_share_root` is set.
+- **`prepare_hits_upload.ipynb`**: the operator notebook for a HiTS data upload. It follows
+  Part C and E of the data upload SOP: build the `toload` folders, run the EnVision barcode /
+  plate-order check, fix duplicate source plates, spot-check, and clean up after upload.
+- **`plate_maps.py`**: builds plate-map workbooks from HiTS and the `toload` folders. It only
+  reads from HiTS (production `QB3_HiTS` unless `hits_db` is set). Raw data is read from
+  `/Volumes/Shared/` unless `smdc_share_root` is set.
+- **`check_grid_num.py`**: checks each `grid_num.txt` against the plates and barcodes in the
+  EnVision export. Also runs on the command line: `python check_grid_num.py ROOT -o report.csv`.
+- **`safe_register.py`**: register plates and wells (including daughter plates). It connects to
+  the test database `QB3_HiTS_nightly` unless you name `QB3_HiTS`, does a dry run (insert,
+  report, roll back) unless you pass `save=True`, and saves plates and wells together, so a
+  failure leaves nothing half-saved. The reshaping helpers it uses are in
+  `inventory_registration.py`.
 
 #### preprocess_data
 Before uploading data to the HiTS db, reorganize or prepare for instrument use
