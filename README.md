@@ -26,6 +26,11 @@ plates and wells in together so a failure leaves nothing half-saved. The reshapi
 helpers it uses live in `inventory_registration.py`. Run the tests with
 `pytest database_interactions/`.
 
+**Plate maps:** `plate_maps.py` (also in `database_interactions/`) builds plate-map
+workbooks from HiTS and the `toload` folders for data upload. It only reads from
+HiTS (production `QB3_HiTS` unless `hits_db` is set). Raw data is read from
+`/Volumes/Shared/` unless `smdc_share_root` is set.
+
 #### preprocess_data
 Before uploading data to the HiTS db, reorganize or prepare for instrument use
 
@@ -36,7 +41,7 @@ Analyses to replace pipeline pilot functionality
 After exporting data from HiTs, further analysis for hit selection and assay comparisons
 
 #### data_viz
-Functions for drawing plate maps, DR curves, etc.
+Functions for drawing DR curves, etc. (plate map drawing moved to `database_interactions/plate_maps.py`)
 
 #### other_analyses
 Random useful requested analyses
