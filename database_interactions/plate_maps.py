@@ -1948,9 +1948,11 @@ def dr_plate_files(outdir, assay_ids):
         outdir (str): the upload folder (the notebook's OUTDIR).
         assay_ids (list of str): assay IDs, e.g. ['2863', '2865'].
     """
-    assay_ids = tuple(str(a) for a in assay_ids)
+    prefixes = tuple(f"{a}_" for a in assay_ids)
+    exact = {str(a) for a in assay_ids}
     for d in sorted(os.listdir(outdir)):
-        if not d.startswith(assay_ids):
+        # '2863' must not pick up '28630_<name>', so match on '<id>_' or the bare id.
+        if not (d.startswith(prefixes) or d in exact):
             continue
         for root, _, files in os.walk(os.path.join(outdir, d)):
             if 'loaded' in root:
@@ -1972,7 +1974,9 @@ def find_duplicate_source_plates(outdir, assay_ids):
     """
     frames = []
     for path in dr_plate_files(outdir, assay_ids):
-        t = pd.read_excel(path, engine='openpyxl')[['SMDC_ID', 'Source plate', 'Source well']].drop_duplicates()
+        t = pd.read_excel(path, engine='openpyxl', keep_default_na=False)
+        t = t[['SMDC_ID', 'Source plate', 'Source well']].drop_duplicates()
+        t = t[~t.SMDC_ID.astype(str).isin(['', 'NA'])]  # empty and control wells are not compounds
         t = t[t.SMDC_ID.duplicated(keep=False)].copy()
         t['Plate'] = path
         frames.append(t)
@@ -2000,17 +2004,27 @@ def remove_duplicate_source_plates(dups, keep=None, write=False):
     keep = [0] * len(dups) if keep is None else list(keep)
     if len(keep) != len(dups):
         raise ValueError(f"keep has {len(keep)} entries but dups has {len(dups)} rows")
+    # Check every index before touching any file: an out-of-range index would
+    # otherwise keep nothing and delete every row for that compound.
+    for i, (k, entries) in enumerate(zip(keep, dups.SPlateWell)):
+        if isinstance(k, bool) or not isinstance(k, (int, np.integer)) or not 0 <= k < len(entries):
+            raise ValueError(f"keep[{i}] = {k!r} but row {i} has {len(entries)} entries (use 0 to {len(entries) - 1})")
     changes = {}
     for plate in dups.Plate.unique():
-        t = pd.read_excel(plate, engine='openpyxl')
+        # keep_default_na=False keeps the loader's literal 'NA' cells as 'NA'
+        # (and blanks blank) when the file is saved again.
+        t = pd.read_excel(plate, engine='openpyxl', keep_default_na=False)
         before = len(t)
         for i, row in dups[dups.Plate == plate].iterrows():
             for j, entry in enumerate(row.SPlateWell):
                 if j == keep[i]:
                     continue
                 src_plate, src_well = entry.rsplit(' ', 1)
-                t = t[~((t.SMDC_ID == row.SMDC_ID) & (t['Source plate'] == src_plate)
-                        & (t['Source well'] == src_well))]
+                # Compare as text: SPlateWell entries are strings, but a numeric
+                # barcode is read from Excel as a number.
+                t = t[~((t.SMDC_ID.astype(str) == str(row.SMDC_ID))
+                        & (t['Source plate'].astype(str) == src_plate)
+                        & (t['Source well'].astype(str) == src_well))]
         changes[plate] = (before, len(t))
         logger.info(f"{plate}: {before} -> {len(t)} rows")
         if write:

@@ -1,3 +1,4 @@
+import pytest
 """Smoke tests for the pieces that can run without a database.
 
 Verifies that _normalize_share_path reproduces the ORIGINAL inline logic exactly
@@ -160,6 +161,39 @@ def test_dr_plate_files_skips_loaded(tmp_path):
     path = _dr_folder(tmp_path)
     assert list(pm.dr_plate_files(str(tmp_path), ['2863'])) == [str(path)]
     assert list(pm.dr_plate_files(str(tmp_path), ['9999'])) == []
+
+
+def test_dr_plate_files_does_not_match_longer_assay_id(tmp_path):
+    path = _dr_folder(tmp_path)
+    other = tmp_path / '28630_other' / 'toload_0'
+    other.mkdir(parents=True)
+    pd.DataFrame({'SMDC_ID': [1]}).to_excel(other / 'X_DR_plate.xlsx', index=False)
+    assert list(pm.dr_plate_files(str(tmp_path), ['2863'])) == [str(path)]
+    assert list(pm.dr_plate_files(str(tmp_path), [2863])) == [str(path)]
+
+
+@pytest.mark.parametrize('keep', [[2], [-1], [True], [0.0]])
+def test_remove_duplicates_rejects_bad_keep_before_writing(tmp_path, keep):
+    path = _dr_folder(tmp_path)
+    dups = pm.find_duplicate_source_plates(str(tmp_path), ['2863'])
+    with pytest.raises(ValueError, match='keep'):
+        pm.remove_duplicate_source_plates(dups, keep=keep, write=True)
+    assert len(pd.read_excel(path)) == 4
+
+
+def test_remove_duplicates_keeps_literal_na_and_numeric_plates(tmp_path):
+    d = tmp_path / '2863_test' / 'toload_0'
+    d.mkdir(parents=True)
+    path = d / 'P1_DR_plate.xlsx'
+    pd.DataFrame({'SMDC_ID': [5, 5, 'NA'], 'Lot': [1, 1, 'NA'],
+                  'Source plate': [1001, 1002, 'NA'],
+                  'Source well': ['A01', 'A02', 'A03']}).to_excel(path, index=False)
+    dups = pm.find_duplicate_source_plates(str(tmp_path), ['2863'])
+    assert dups.SPlateWell.iloc[0] == ['1001 A01', '1002 A02']
+    pm.remove_duplicate_source_plates(dups, keep=[0], write=True)
+    left = pd.read_excel(path, keep_default_na=False)
+    assert left['Source plate'].tolist() == [1001, 'NA']
+    assert left['Lot'].tolist() == [1, 'NA']
 
 
 def test_find_and_remove_duplicate_source_plates(tmp_path):

@@ -11,6 +11,8 @@ dependencies = ["numpy", "pandas", "SQLAlchemy", "PyMySQL"]
 
 [project.optional-dependencies]
 tethering = ["matplotlib", "seaborn", "Pillow"]
+# database_interactions: plate_maps, check_grid_num and prepare_hits_upload.ipynb
+upload = ["humanize", "matplotlib", "seaborn", "openpyxl", "scipy", "rapidfuzz"]
 
 [tool.setuptools]
 packages = ["process_data"]

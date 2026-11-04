@@ -74,6 +74,13 @@ def norm(s: str) -> str:
     return re.sub(r"[^A-Z0-9]", "", (s or "").upper())
 
 
+def natural_key(value: str) -> list[tuple[int, object]]:
+    """Human filename order (plate2 before plate10), the same rule
+    raw_data_parsers uses when it loads EnVision CSVs."""
+    return [(0, int(part)) if part.isdigit() else (1, part.casefold())
+            for part in re.split(r"(\d+)", str(value))]
+
+
 def digit_runs(s: str) -> list[int]:
     runs = re.findall(r"\d+", s or "")
     runs.sort(key=len, reverse=True)
@@ -429,7 +436,7 @@ def audit_folder(folder: str, grid_path: str, min_score: float, strict_dates: bo
     entries = parse_grid_num(grid_path)
     res = FolderResult(folder=folder, grid_file=os.path.basename(grid_path), n_grid_entries=len(entries))
 
-    for name in sorted(os.listdir(folder)):
+    for name in sorted(os.listdir(folder), key=natural_key):
         full = os.path.join(folder, name)
         if not os.path.isfile(full) or name.lower() in GRID_FILENAMES or name.startswith("._"):
             continue
@@ -467,7 +474,7 @@ def audit_folder(folder: str, grid_path: str, min_score: float, strict_dates: bo
     # filenames legitimately skip numbers, do not flag the filename sequence;
     # the plate-level count check below still catches a missing file/plate.
     if len(res.envision_files) > 1:
-        filename_stems = [os.path.splitext(name)[0] for name in sorted(res.envision_files)]
+        filename_stems = [os.path.splitext(name)[0] for name in sorted(res.envision_files, key=natural_key)]
         filename_pairs = align_strings(entries, filename_stems, min_score)
         filename_unmatched = [p["grid_entry"] for p in filename_pairs if not p["accepted"]]
         one_plate_per_file = all(len(per_file[name]) == 1 for name in res.envision_files)
@@ -486,13 +493,15 @@ def audit_folder(folder: str, grid_path: str, min_score: float, strict_dates: bo
     # This applies independently to each file, including folders with multiple
     # one-plate EnVision exports.
     barcode_filename_results = []
-    for name in sorted(res.envision_files):
+    barcode_filename_failed = False
+    for name in sorted(res.envision_files, key=natural_key):
         file_plates = per_file[name]
         if len(file_plates) != 1 or not file_plates[0].barcode or file_plates[0].blank_barcode:
             continue
         plate = file_plates[0]
         score, method = pair_score(os.path.splitext(name)[0], plate.barcode)
         status = "PASS" if score >= min_score else "FAIL"
+        barcode_filename_failed = barcode_filename_failed or status == "FAIL"
         barcode_filename_results.append(
             f"{name}: {status} {score:.2f} ({method})"
         )
@@ -552,9 +561,12 @@ def audit_folder(folder: str, grid_path: str, min_score: float, strict_dates: bo
     unmatched = [r["grid_entry"] for r in res.rows if not r["accepted"]]
     if unmatched:
         notes.append(f"{len(unmatched)} unmatched: " + ", ".join(unmatched[:4]))
-    weak = [r for r in res.rows if r["accepted"] and r["score"] < 0.9]
+    # Only an exact match (ignoring case and punctuation) proves the right
+    # plate: RUN2026-P01 vs RUN2026-P99 or P01A vs P01B still score >= 0.95.
+    weak = [r for r in res.rows if r["accepted"] and r["score"] < 1.0]
     if weak:
-        notes.append(f"{len(weak)} fuzzy match(es)")
+        notes.append(f"{len(weak)} inexact match(es), check by eye: "
+                     + ", ".join(f"{r['grid_entry']}~{r['barcode']}" for r in weak[:4]))
     if res.dates_ok is False:
         notes.append("measurement timestamps NOT monotonic with plate index")
     elif res.dates_ok is None:
@@ -562,8 +574,11 @@ def audit_folder(folder: str, grid_path: str, min_score: float, strict_dates: bo
 
     barcode_order_bad = (not all_barcodes_blank) and res.order != "in order"
     filename_order_bad = filename_order_check and res.filename_order != "in order"
-    filename_count_bad = len(res.envision_files) > 1 and len(entries) != len(res.envision_files)
-    barcode_filename_bad = "; FAIL " in res.barcode_filename_match or res.barcode_filename_match.startswith("FAIL ")
+    # Multi-plate exports legitimately have fewer files than grid entries; the
+    # plate-count check covers them, so only compare file counts when each file
+    # is meant to hold one plate.
+    filename_count_bad = filename_order_check and len(entries) != len(res.envision_files)
+    barcode_filename_bad = barcode_filename_failed
 
     # Barcode blanks mean the barcode-based checks have nothing to evaluate;
     # they must not suppress an independent filename/grid_num failure.
@@ -572,7 +587,8 @@ def audit_folder(folder: str, grid_path: str, min_score: float, strict_dates: bo
     elif all_barcodes_blank:
         res.verdict = "BARCODES_BLANK"
     elif not unmatched and len(entries) == len(plates):
-        res.verdict = "OK" if (res.dates_ok is not False or not strict_dates) else "REVIEW"
+        dates_bad = res.dates_ok is False and strict_dates
+        res.verdict = "REVIEW" if (weak or dates_bad) else "OK"
     elif res.n_matched == 0:
         res.verdict = "NO_MATCH"
     else:
