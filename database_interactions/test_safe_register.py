@@ -92,7 +92,10 @@ def test_daughter_plates_copy_mother_wells(engine):
 
 
 def test_connect_defaults_to_nightly(monkeypatch):
+    for v in ("hits_host", "hits_db"):
+        monkeypatch.delenv(v, raising=False)
     monkeypatch.setenv("mysql_user", "u")
     monkeypatch.setenv("mysql80_pwd", "p")
     monkeypatch.setenv("mysql80_port", "3306")
     assert sr.connect().url.database == sr.TEST_DB
+

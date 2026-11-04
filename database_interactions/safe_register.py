@@ -26,22 +26,20 @@ Typical notebook use (one settings cell, then one run cell)::
 For daughter plates, build the plates with ``ir.copy_daughter_plates`` and pass
 ``sr.wells_for_daughter_plates(mother_wells)`` as the second argument.
 
-Connection settings come from environment variables, never from code:
-``mysql_user`` plus ``mysql80_pwd`` / ``mysql80_port`` (or ``mysql_pwd`` /
-``mysql_port``), and optionally ``hits_host`` (default ``localhost``, i.e. the
-SSH tunnel).
+Connection settings come from environment variables, never from code; see
+``mysql_cnx.create_mysql_cnx`` for the list.
 """
 
 from __future__ import annotations
 
-import os
 from typing import Any, Callable
 
 import pandas as pd
-from sqlalchemy import MetaData, Table, create_engine, insert, select
-from sqlalchemy.engine import URL, Connection, Engine
+from sqlalchemy import MetaData, Table, insert, select
+from sqlalchemy.engine import Connection, Engine
 
 import inventory_registration as ir
+from mysql_cnx import create_mysql_cnx
 
 TEST_DB = "QB3_HiTS_nightly"
 PRODUCTION_DB = "QB3_HiTS"
@@ -49,30 +47,9 @@ PRODUCTION_DB = "QB3_HiTS"
 WellBuilder = Callable[[pd.DataFrame], pd.DataFrame]
 
 
-def _env(*names: str, default: str | None = None) -> str:
-    for name in names:
-        value = os.environ.get(name)
-        if value:
-            return value
-    if default is not None:
-        return default
-    raise KeyError(f"Set one of these environment variables first: {', '.join(names)}")
-
-
 def connect(db: str = TEST_DB) -> Engine:
     """Open a connection to HiTS. Defaults to the nightly test database."""
-    host = _env("hits_host", default="localhost")
-    url = URL.create(
-        drivername="mysql+pymysql",
-        username=_env("mysql_user"),
-        password=_env("mysql80_pwd", "mysql_pwd"),
-        host=host,
-        port=int(_env("mysql80_port", "mysql_port")),
-        database=db,
-    )
-    label = "PRODUCTION" if db == PRODUCTION_DB else "test"
-    print(f"Connected to {db} ({label}) on {host}")
-    return create_engine(url)
+    return create_mysql_cnx(db=db)
 
 
 def wells_for_new_plates(wells: pd.DataFrame, *, well_key_col: str = "plate") -> WellBuilder:
