@@ -620,7 +620,7 @@ def find_grid_files(root: str, follow_links: bool = False) -> Iterable[tuple[str
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("root", help="directory to walk")
+    ap.add_argument("root", nargs="+", help="one or more directories to walk")
     ap.add_argument("-o", "--report", help="write folder-level summary CSV here")
     ap.add_argument("-d", "--detail", help="write per-plate match rows CSV here")
     ap.add_argument("--min-score", type=float, default=0.55)
@@ -633,7 +633,8 @@ def main(argv=None) -> int:
         print("note: SciPy not found, falling back to greedy matching", file=sys.stderr)
 
     results = []
-    for folder, grid_path in find_grid_files(args.root, args.follow_links):
+    grid_files = [g for root in args.root for g in find_grid_files(root, args.follow_links)]
+    for folder, grid_path in grid_files:
         try:
             results.append(audit_folder(folder, grid_path, args.min_score, args.strict_dates))
         except Exception as exc:
@@ -642,7 +643,7 @@ def main(argv=None) -> int:
             results.append(r)
 
     if not results:
-        print(f"No grid_num.txt found under {args.root}")
+        print(f"No grid_num.txt found under {', '.join(args.root)}")
         return 0
 
     flagged = {"ORDER_MISMATCH", "NO_MATCH", "BARCODES_BLANK", "CSV_NOT_ENVISION",
@@ -702,23 +703,40 @@ def main(argv=None) -> int:
     return 1 if any(r.verdict in flagged for r in results) else 0
 
 
-def check_upload_folder(outdir, summary_name="folder_summary.csv", detail_name="folder_plate_details.csv"):
-    """Run the audit on an upload folder and return the folders that are not OK.
+def check_upload_folder(folders, summary_name="folder_summary.csv", detail_name="folder_plate_details.csv",
+                        report_dir=None):
+    """Run the audit on upload folders and return the ones that are not OK.
 
-    Notebook entry point (prepare_hits_upload.ipynb step 3). Writes the two
-    report CSVs into outdir, replacing any from an earlier run, and returns the
-    summary rows whose verdict is not OK (empty means everything matched).
-    Raises FileNotFoundError if no grid_num.txt folders were found.
+    Notebook entry point (prepare_hits_upload.ipynb step 3).
+
+    Args:
+        folders (str or list[str]): the folders to check. Pass
+            plate_maps.load_folders(info) to check only what step 2 just built,
+            not older assays in the same output folder. A single folder is
+            walked for every grid_num.txt under it.
+        report_dir (str, optional): where to write the two report CSVs,
+            replacing any from an earlier run. Default: the folder itself, or
+            the deepest folder the listed folders have in common.
+    Returns:
+        DataFrame: summary rows whose verdict is not OK (empty means
+            everything matched).
+    Raises FileNotFoundError if no grid_num.txt was found.
     """
     import pandas as pd
 
-    summary_csv = os.path.join(outdir, summary_name)
-    detail_csv = os.path.join(outdir, detail_name)
+    if isinstance(folders, (str, os.PathLike)):
+        folders = [folders]
+    folders = [_resolve_share_path(str(f)) for f in folders]
+    if not folders:
+        raise ValueError("No folders to check.")
+    report_dir = report_dir or (folders[0] if len(folders) == 1 else os.path.commonpath(folders))
+    summary_csv = os.path.join(report_dir, summary_name)
+    detail_csv = os.path.join(report_dir, detail_name)
     if os.path.exists(summary_csv):
         os.remove(summary_csv)  # never read a stale report from an earlier run
-    main([outdir, "-o", summary_csv, "-d", detail_csv])
+    main([*folders, "-o", summary_csv, "-d", detail_csv])
     if not os.path.exists(summary_csv):
-        raise FileNotFoundError(f"No grid_num.txt folders found under {outdir}. Did step 2 run?")
+        raise FileNotFoundError(f"No grid_num.txt found under {', '.join(folders)}. Did step 2 run?")
     summary = pd.read_csv(summary_csv)
     problems = summary[summary.verdict != "OK"].reset_index(drop=True)
     if problems.empty:
@@ -726,6 +744,20 @@ def check_upload_folder(outdir, summary_name="folder_summary.csv", detail_name="
     else:
         print(f"{len(problems)} folder(s) need attention before upload:")
     return problems
+
+
+def _resolve_share_path(path):
+    """plate_maps.resolve_share_path when it can be imported (so a Z:\\ path
+    works in WSL), otherwise the path unchanged. Kept lazy so this script
+    still runs on its own without plate_maps' dependencies."""
+    try:
+        from plate_maps import resolve_share_path
+    except Exception:
+        return path
+    try:
+        return resolve_share_path(path)
+    except FileNotFoundError:  # share not mounted: report the path as given
+        return path
 
 if __name__ == "__main__":
     sys.exit(main())

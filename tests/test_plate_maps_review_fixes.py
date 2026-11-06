@@ -219,9 +219,11 @@ def test_folder_pipeline_passes_each_plate_its_own_row(tmp_path, monkeypatch):
         return pd.DataFrame({'Destination well': ['A01'], 'Sci_PosControl': [False], 'Sci_NegControl': [False]})
     monkeypatch.setattr(pm, '_read_info_sheet', lambda infile: ({}, info))
     monkeypatch.setattr(pm, 'make_dr_platemaps', fake_make)
-    pm.make_dr_platemaps_and_folders('info.xlsx', basedir=str(tmp_path / 'out'), share_root=str(share))
+    (tmp_path / 'out' / '1_older_assay' / 'toload_0' / '20250101').mkdir(parents=True)
+    result = pm.make_dr_platemaps_and_folders('info.xlsx', basedir=str(tmp_path / 'out'), share_root=str(share))
     assert seen == {'P1': 'use map', 'P2': 'use lots', 'P3': 'XYZ-MA01', 'P4': 'XYZ-MA01'}
     folder = next((tmp_path / 'out').glob('2863*/toload_0/20260101'))
+    assert pm.load_folders(result) == [str(folder)]
     assert (folder / 'grid_num.txt').read_text().split() == ['grid_num', 'P1', 'P2', 'P3', 'P4']
     assert (folder / 'run.csv').exists()
 
@@ -317,3 +319,11 @@ def test_copy_keeps_timestamps_when_allowed(tmp_path):
     out = tmp_path / 'out.csv'
     pm._copy_file(str(src), str(out))
     assert int(os.path.getmtime(out)) == 1_000_000_000
+
+
+def test_load_folders_needs_the_returned_info():
+    with pytest.raises(ValueError, match='load folders'):
+        pm.load_folders(pd.DataFrame({'Grid_num': ['P1']}))
+    info = pd.DataFrame({'Grid_num': ['P1']})
+    info.attrs['load_folders'] = ['/x/1_a/toload_0/20260101']
+    assert pm.load_folders(info) == ['/x/1_a/toload_0/20260101']
