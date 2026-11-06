@@ -1859,6 +1859,7 @@ def make_dr_platemaps_and_folders(infile='', users=[("Amanda", "Paulson")], base
             'Z:/', '/mnt/z/' or '/Volumes/Shared/'. Default: default_share_root().
     Returns:
         info (DataFrame): the parsed Info sheet, as a record of what was done.
+            load_folders(info) lists the toload_<i>/<date> folders it wrote.
 
     Side effects, which are the actual point of this function:
         * creates <basedir>/<assay_id>_<assay_name>/toload_<i>/<date>/
@@ -1883,6 +1884,7 @@ def make_dr_platemaps_and_folders(infile='', users=[("Amanda", "Paulson")], base
     infile = resolve_share_path(infile, share_root)
     basedir = resolve_share_path(basedir, share_root)
     dp, info = _read_info_sheet(infile)
+    load_folders = []
 
     # One instrument file may back several plates, so group by file.
     for df, rpt in _iter_load_groups(info):
@@ -1898,6 +1900,8 @@ def make_dr_platemaps_and_folders(infile='', users=[("Amanda", "Paulson")], base
             if not os.path.exists(outdir):
                 os.makedirs(outdir)
                 logger.info(f'create folder {outdir}')
+            if outdir not in load_folders:
+                load_folders.append(outdir)
 
             # make and save platemaps if dose response
             gridnum = pd.DataFrame(row.Grid_num.split(';'), columns=['grid_num'])
@@ -1940,7 +1944,26 @@ def make_dr_platemaps_and_folders(infile='', users=[("Amanda", "Paulson")], base
             _copy_file(origfile, outfile)
             elapsed = time.time() - starttime
             logger.info(f'Done copying in {humanize.precisedelta(elapsed, minimum_unit="seconds", format="%d")}')
+    # The toload_<i>/<date> folders this run wrote to, so later steps (the
+    # EnVision check) look only at them and not at older assays in basedir.
+    info.attrs['load_folders'] = load_folders
     return info
+
+
+def load_folders(info):
+    """The toload_<i>/<date> folders make_dr_platemaps_and_folders wrote to.
+
+    Args:
+        info (DataFrame): what make_dr_platemaps_and_folders returned.
+    Returns:
+        list[str]: one path per folder, in the order they were created. Each
+            holds a grid_num.txt, the DR plate files and the copied raw data.
+    """
+    folders = info.attrs.get('load_folders')
+    if folders is None:
+        raise ValueError("info has no record of its load folders. Pass the DataFrame that "
+                         "make_dr_platemaps_and_folders returned, not a copy or a re-read Info sheet.")
+    return list(folders)
 
 
 # ###############################################################################
@@ -2224,6 +2247,7 @@ def dr_plate_files(outdir, assay_ids):
         outdir (str): the upload folder (the notebook's OUTDIR).
         assay_ids (list of str): assay IDs, e.g. ['2863', '2865'].
     """
+    outdir = resolve_share_path(outdir)
     prefixes = tuple(f"{a}_" for a in assay_ids)
     exact = {str(a) for a in assay_ids}
     for d in sorted(os.listdir(outdir)):
