@@ -30,6 +30,11 @@ etc. work without any `sys.path` edits.
   `/mnt/z/` (Windows/WSL). For another drive, pass `share_root=` or set `smdc_share_root`.
 - **`check_grid_num.py`**: checks each `grid_num.txt` against the plates and barcodes in the
   EnVision export. Also runs on the command line: `python check_grid_num.py ROOT -o report.csv`.
+- **`delete_extra_lots.py`**: removes duplicate `INV_COMP_LOT` rows left by partial
+  registration runs. It is a dry run unless you pass `--execute`, and it checks `red_flags.csv`
+  (foreign-key rules) before deleting anything.
+- **`insert_mixtures.py`**: registers mixtures from component rows (Excel/CSV). Its default
+  database is `QB3_HiTS_nightly`.
 - **`safe_register.py`**: register plates and wells (including daughter plates). It connects to
   the test database `QB3_HiTS_nightly` unless you name `QB3_HiTS`, does a dry run (insert,
   report, roll back) unless you pass `save=True`, and saves plates and wells together, so a
@@ -66,6 +71,19 @@ This is the canonical source of the `smdc-data-proc` distribution, formerly
 installed from data-proc. Reinstall from here in each consuming environment.
 Imports remain `import raw_data_parsers`, `import mysql_cnx`, and
 `from process_data import tethering_analysis`.
+
+The scripts in `database_interactions/` and `data_viz/` (`plate_maps`, `check_grid_num`,
+`inventory_registration`, `safe_register`, `plot_curves`, ...) are plain modules, not a
+package. From a notebook anywhere, including outside this repo, add one line first:
+
+```python
+import smdc_paths          # installed by pip install -e .; finds this checkout
+import plate_maps as pm
+import plot_curves as pc
+```
+
+No `sys.path.append('/Users/.../data-proc')` lines are needed any more. data-proc is retired,
+and everything it held now lives here.
 
 `raw_data_parsers.extract_rpt_data(infile, samples_only=False, outdir="./")`
 extracts Xevo sample metadata and writes spectra to `outdir/samples`.

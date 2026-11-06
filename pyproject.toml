@@ -10,10 +10,10 @@ requires-python = ">=3.9"
 dependencies = ["numpy", "pandas", "SQLAlchemy", "PyMySQL"]
 
 [project.optional-dependencies]
-tethering = ["matplotlib", "seaborn", "Pillow"]
+tethering = ["matplotlib", "seaborn", "Pillow", "humanize", "openpyxl", "scipy"]
 # database_interactions: plate_maps, check_grid_num and prepare_hits_upload.ipynb
 upload = ["humanize", "matplotlib", "seaborn", "openpyxl", "scipy", "rapidfuzz"]
 
 [tool.setuptools]
 packages = ["process_data"]
-py-modules = ["raw_data_parsers", "mysql_cnx"]
+py-modules = ["raw_data_parsers", "mysql_cnx", "smdc_paths"]
