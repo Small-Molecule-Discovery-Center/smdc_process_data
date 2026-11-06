@@ -204,8 +204,11 @@ You cannot have both per-well lots and per-well assay IDs on the same plate.
 
 ### Shorthand in block 0
 
-- An SMDC ID cell may be written `285699-2` to pin an exact lot. If *any* cell in
-  block 0 contains a dash, the whole column is split into `SMDC_ID` and `Lot`.
+- An SMDC ID cell may be written `285699-2` to pin an exact lot (spaces around
+  the dash are fine). Only cells that are exactly `<digits>-<digits>` are split.
+  Pinned lots always win; the other wells get their lot the usual way (block 2,
+  source plate lookup, then newest lot by user). If every compound well is
+  pinned, block 2 isn't needed. A cell like `12346-1-2` stops with an error.
 - Non-compound wells: `DMSO`, `Water`, `Background` (any case) are recognised
   automatically and nulled out.
 - Any other text label will raise a `ValueError` naming the offending string.
