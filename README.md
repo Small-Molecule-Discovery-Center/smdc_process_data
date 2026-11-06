@@ -31,11 +31,6 @@ etc. work without any `sys.path` edits.
 - **`check_grid_num.py`**: checks each `grid_num.txt` against the plates and barcodes in the
   EnVision export. Also runs on the command line: `python check_grid_num.py ROOT -o report.csv`.
 - **`PLATE_MAPS.md`**: full reference for `plate_maps.py`. It covers the workbook format, the `Source_plate` dispatch words, how lots are resolved, and troubleshooting.
-- **`delete_extra_lots.py`**: removes duplicate `INV_COMP_LOT` rows left by partial
-  registration runs. It is a dry run unless you pass `--execute`, and it checks `red_flags.csv`
-  (foreign-key rules) before deleting anything.
-- **`insert_mixtures.py`**: registers mixtures from component rows (Excel/CSV). Its default
-  database is `QB3_HiTS_nightly`.
 - **`safe_register.py`**: register plates and wells (including daughter plates). It connects to
   the test database `QB3_HiTS_nightly` unless you name `QB3_HiTS`, does a dry run (insert,
   report, roll back) unless you pass `save=True`, and saves plates and wells together, so a

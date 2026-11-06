@@ -1,4 +1,4 @@
-"""Scripts moved from data-proc import cleanly and find their files from the repo."""
+"""Code moved from data-proc import cleanly and find their files from the repo."""
 import subprocess
 import sys
 from pathlib import Path
@@ -11,19 +11,6 @@ def test_smdc_paths_makes_script_folders_importable():
     out = subprocess.run([sys.executable, '-c', code], cwd=REPO, capture_output=True, text=True)
     assert out.returncode == 0, out.stderr
     assert out.stdout.strip() == 'ok'
-
-
-def test_delete_extra_lots_uses_repo_red_flags():
-    import delete_extra_lots as d
-    assert d.DEFAULT_RED_FLAGS == REPO / 'database_interactions' / 'red_flags.csv'
-    assert not d.load_red_flags(d.DEFAULT_RED_FLAGS).empty
-
-
-def test_write_scripts_show_help_without_a_database():
-    for script in ['delete_extra_lots.py', 'insert_mixtures.py']:
-        out = subprocess.run([sys.executable, str(REPO / 'database_interactions' / script), '--help'],
-                             capture_output=True, text=True)
-        assert out.returncode == 0, out.stderr
 
 
 def test_tethering_analysis_imports_from_the_repo():
