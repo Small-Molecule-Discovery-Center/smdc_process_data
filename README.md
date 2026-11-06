@@ -30,6 +30,7 @@ etc. work without any `sys.path` edits.
   `/mnt/z/` (Windows/WSL). For another drive, pass `share_root=` or set `smdc_share_root`.
 - **`check_grid_num.py`**: checks each `grid_num.txt` against the plates and barcodes in the
   EnVision export. Also runs on the command line: `python check_grid_num.py ROOT -o report.csv`.
+- **`PLATE_MAPS.md`**: full reference for `plate_maps.py`. It covers the workbook format, the `Source_plate` dispatch words, how lots are resolved, and troubleshooting.
 - **`delete_extra_lots.py`**: removes duplicate `INV_COMP_LOT` rows left by partial
   registration runs. It is a dry run unless you pass `--execute`, and it checks `red_flags.csv`
   (foreign-key rules) before deleting anything.
