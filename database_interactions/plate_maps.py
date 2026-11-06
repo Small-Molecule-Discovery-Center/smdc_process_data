@@ -1156,6 +1156,41 @@ def resolve_share_path(path, share_root=None):
     return os.path.join(share_root or default_share_root(), _normalize_share_path(p))
 
 
+
+def _copy_file(src, dst):
+    """Copy a file's contents, then its timestamps if the filesystem allows it.
+
+    shutil.copy2 fails with PermissionError on some network mounts (a drvfs
+    mount of Z: in WSL owned by root, for example): the data copies fine but
+    setting the modification time is refused. Keep the copy and log a
+    warning instead of stopping the run.
+    """
+    shutil.copyfile(src, dst)
+    try:
+        shutil.copystat(src, dst)
+    except OSError as e:
+        logger.warning(f"Copied {dst} but could not keep the original timestamps ({e}). "
+                       "In WSL, mount Z: with your uid/gid to avoid this; see the setup notes.")
+    return dst
+
+
+def _copy_tree(src, dst, ignore=None):
+    """copytree(..., dirs_exist_ok=True) that uses _copy_file for each file.
+
+    shutil.copytree also sets directory timestamps and raises shutil.Error at
+    the end if that is refused, which a WSL network mount does. Directory
+    timestamps don't matter here, so they aren't copied.
+    """
+    for root, dirs, files in os.walk(src):
+        skip = set(ignore(root, dirs + files)) if ignore else set()
+        dirs[:] = [d for d in dirs if d not in skip]
+        target = os.path.join(dst, os.path.relpath(root, src))
+        os.makedirs(target, exist_ok=True)
+        for name in files:
+            if name not in skip:
+                _copy_file(os.path.join(root, name), os.path.join(target, name))
+
+
 def _read_info_sheet(infile):
     """Read and normalise the workbook's Info sheet.
 
@@ -1899,10 +1934,10 @@ def make_dr_platemaps_and_folders(infile='', users=[("Amanda", "Paulson")], base
             outfile = os.path.join(outdir, fname)
             logger.info(f'{origfile} -> {outfile}')
 
-            # shutil.copy2 rather than os.system("cp ..."): no shell quoting to
+            # _copy_file rather than os.system("cp ..."): no shell quoting to
             # get wrong, and a failed copy raises instead of scrolling past.
-            # copy2 preserves mtime, which matters for provenance.
-            shutil.copy2(origfile, outfile)
+            # It keeps mtime where the mount allows, which matters for provenance.
+            _copy_file(origfile, outfile)
             elapsed = time.time() - starttime
             logger.info(f'Done copying in {humanize.precisedelta(elapsed, minimum_unit="seconds", format="%d")}')
     return info
@@ -1974,7 +2009,7 @@ def clean_up_folders(infile=None, basedir='./', delete_orig=False, share_root=No
     for oldpath, newpath in moves:
         logger.info(f'{oldpath} -> {newpath}')
         os.makedirs(os.path.dirname(newpath), exist_ok=True)
-        shutil.copytree(oldpath, newpath, ignore=ignore_files, dirs_exist_ok=True)
+        _copy_tree(oldpath, newpath, ignore=ignore_files)
         shutil.rmtree(oldpath, ignore_errors=True)
 
 

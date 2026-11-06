@@ -284,3 +284,36 @@ def test_folder_pipeline_reads_a_windows_infile_from_wsl(tmp_path, monkeypatch):
         pm.make_dr_platemaps_and_folders(infile=r'Z:\SMDC\a.xlsx', basedir=r'Z:\SMDC\toload',
                                          share_root=str(tmp_path))
     assert seen['infile'] == os.path.join(str(tmp_path), 'SMDC/a.xlsx')
+
+
+def test_copy_survives_a_mount_that_refuses_timestamps(tmp_path, monkeypatch, caplog):
+    src = tmp_path / 'a' / 'run.csv'
+    src.parent.mkdir()
+    src.write_text('data')
+    (src.parent / '.DS_Store').write_text('junk')
+    (src.parent / 'sub').mkdir()
+    (src.parent / 'sub' / 'b.csv').write_text('more')
+
+    def refuse(*a, **k):
+        raise PermissionError(1, 'Operation not permitted')
+    monkeypatch.setattr(pm.shutil, 'copystat', refuse)
+
+    out = tmp_path / 'out.csv'
+    pm._copy_file(str(src), str(out))
+    assert out.read_text() == 'data'
+    assert 'could not keep the original timestamps' in caplog.text
+
+    dst = tmp_path / 'loaded'
+    pm._copy_tree(str(src.parent), str(dst), ignore=pm.ignore_files)
+    assert (dst / 'run.csv').read_text() == 'data'
+    assert (dst / 'sub' / 'b.csv').read_text() == 'more'
+    assert not (dst / '.DS_Store').exists()
+
+
+def test_copy_keeps_timestamps_when_allowed(tmp_path):
+    src = tmp_path / 'run.csv'
+    src.write_text('data')
+    os.utime(src, (1_000_000_000, 1_000_000_000))
+    out = tmp_path / 'out.csv'
+    pm._copy_file(str(src), str(out))
+    assert int(os.path.getmtime(out)) == 1_000_000_000
