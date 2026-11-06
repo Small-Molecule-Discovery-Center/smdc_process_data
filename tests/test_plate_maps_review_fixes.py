@@ -118,9 +118,22 @@ def test_blocks_with_headers_and_extra_empty_rows_read_correctly():
     assert sorted(conc.row.unique()) == ROWS
 
 
-def test_blank_only_separator_raises_instead_of_shifting_rows():
-    sheet = _sheet([lambda r, c: 1000 + c, lambda r, c: float(c)], separator='blank')
-    with pytest.raises(ValueError, match='Block 1'):
+@pytest.mark.parametrize('separator,blanks', [('blank', 1), ('blank', 3), ('header', 0), ('header', 2)])
+def test_every_block_layout_reads_the_right_rows(separator, blanks):
+    sheet = _sheet([lambda r, c: 1000 + c, lambda r, c: float(c) + ROWS.index(r) / 100,
+                    lambda r, c: f'L{r}{c}'], separator=separator, blanks=blanks)
+    conc = pm.read_platemap_block(sheet, block=1, value_name='conc')
+    lots = pm.read_platemap_block(sheet, block=2, value_name='lot')
+    a01 = conc[(conc.row == 'A') & (conc.col == '01')].conc.item()
+    p24 = conc[(conc.row == 'P') & (conc.col == '24')].conc.item()
+    assert (a01, p24) == (1.0, 24.15)
+    assert lots[(lots.row == 'A') & (lots.col == '01')].lot.item() == 'LA1'
+    assert len(conc) == len(lots) == 384
+
+
+def test_missing_block_raises_clearly():
+    sheet = _sheet([lambda r, c: 1000 + c])
+    with pytest.raises(ValueError, match='block 1 does not exist'):
         pm.read_platemap_block(sheet, block=1, value_name='conc')
 
 
