@@ -1236,6 +1236,27 @@ def _read_info_sheet(infile):
     return dp, info
 
 
+SOURCE_PLATE_HELP = ("Fill in Source_plate for every plate in the Info tab: one or more source plate "
+                     "barcodes separated by ';', 'use lots' (lots drawn in block 2), 'use map' (source "
+                     "plate barcodes drawn in block 2), 'use biomek' (a Biomek worklist tab), or "
+                     "'n.a.' (no source plate).")
+
+
+def _blank_source_plate_message(grid_nums):
+    return f"Source_plate is blank for {', '.join(grid_nums)}. {SOURCE_PLATE_HELP}"
+
+
+def _check_source_plates(info):
+    """Raise before anything is written if any Info row has no Source_plate."""
+    if 'Source_plate' in info.columns:
+        values = info['Source_plate']
+    else:  # the column was empty in every row, so _read_info_sheet dropped it
+        values = pd.Series([np.nan] * len(info), index=info.index)
+    blank = values.isna() | (values.astype(str).str.strip().isin(['', 'nan']))
+    if blank.any():
+        raise ValueError(_blank_source_plate_message(info.loc[blank, 'Grid_num'].astype(str).tolist()))
+
+
 def _assay_dir_name(raw_assay_id, assay_name):
     """Build the <assay_id>_<assay_name> folder name for one Info row.
 
@@ -1407,8 +1428,10 @@ def get_source_plate_info(row, dids, maps, cnx, replace_vals):
 
         'n.a.'          no source plate exists (compounds added by hand).
                         Source plate/well are literally 'NA'.
-        'lot'  or ''    lots are drawn in block 2 of the map; plates are then
+        'lot'           lots are drawn in block 2 of the map; plates are then
                         looked up from (SMDC_ID, Lot).
+        ''              an error. Blank used to mean 'use lots', which hid a
+                        forgotten Source_plate until much later.
         'map'           source plate barcodes are drawn in block 2 of the map,
                         i.e. wells came from different plates.
         'biomek'        handled upstream in make_dr_platemaps, not here.
@@ -1439,7 +1462,10 @@ def get_source_plate_info(row, dids, maps, cnx, replace_vals):
         logger.info("Source plate is N.A.")
         dids['Source plate'] = 'NA'
         dids['Source well'] = 'NA'
-    elif ('lot' in source_plate_val) or (source_plate_val == ''):
+    elif source_plate_val == '':
+        raise ValueError(_blank_source_plate_message(
+            [str(_series_get_ci(row, 'Grid_num', '?'))]))
+    elif 'lot' in source_plate_val:
         logger.info("Will get source plate info from lot lookup")
         try:
             lots = read_platemap_block(plate_map=maps, block=2, value_name='Lot')
@@ -1920,6 +1946,8 @@ def make_dr_platemaps_and_folders(infile='', users=[("Amanda", "Paulson")], base
     infile = resolve_share_path(infile, share_root)
     basedir = resolve_share_path(basedir, share_root)
     dp, info = _read_info_sheet(infile)
+    if dose_response:
+        _check_source_plates(info)  # fail now, not after folders are made and files copied
     load_folders = []
 
     # One instrument file may back several plates, so group by file.
@@ -2406,6 +2434,8 @@ def source_plate_barcodes(info):
     "use echo/biomek", "n.a."). Order is preserved, duplicates removed.
     """
     out = []
+    if 'Source_plate' not in info.columns:
+        return out
     for v in info['Source_plate'].dropna().astype(str):
         for b in v.split(';'):
             b = b.strip()
