@@ -186,6 +186,11 @@ run A to P, it isn't found, and the run stops with an error that says so. (Befor
 Nov 2026 the code used a fixed stride of rows + 1. That was right for the real
 maps, which have header rows, but would have shifted a sheet without them.)
 
+**Block 1 is optional.** A cherry-pick map may leave it out, or use it for a
+plate suffix instead of concentrations. In both cases `[compound] uM` is left
+blank, and the suffix and a whole-plate concentration are passed in when the
+plate is registered. A block 1 that mixes numbers and text stops with an error.
+
 **Block 2 is overloaded.** Its meaning depends on `Source_plate` and `Lot_info`:
 
 | Condition | Block 2 holds |
