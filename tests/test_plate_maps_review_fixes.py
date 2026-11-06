@@ -443,3 +443,8 @@ def test_info_sheet_keeps_na_typed_in_source_plate(tmp_path):
 def test_source_plate_barcodes_skips_keywords_but_keeps_map_barcodes():
     info = pd.DataFrame({'Source_plate': ['use lots', 'NA', 'SMDC-MAP-01; B2', 'B2\nB3']})
     assert pm.source_plate_barcodes(info) == ['SMDC-MAP-01', 'B2', 'B3']
+
+
+def test_source_plate_help_lists_exact_options_in_quotes():
+    for option in ('"use lots"', '"use map"', '"use biomek"', '"NA"', '"n/a"', '"n.a."', '"none"', '";"'):
+        assert option in pm.SOURCE_PLATE_HELP

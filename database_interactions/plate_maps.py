@@ -1245,10 +1245,15 @@ def _read_info_sheet(infile):
     return dp, info
 
 
-SOURCE_PLATE_HELP = ("Fill in Source_plate for every plate in the Info tab: one or more source plate "
-                     "barcodes separated by ';', 'use lots' (lots drawn in block 2), 'use map' (source "
-                     "plate barcodes drawn in block 2), 'use biomek' (a Biomek worklist tab), or "
-                     "'NA' / 'n/a' / 'n.a.' (no source plate; lots from the newest lot registered by USERS).")
+SOURCE_PLATE_HELP = (
+    'Fill in Source_plate for every plate in the Info tab. Accepted values (type them exactly, '
+    'case does not matter):\n'
+    '  "use lots"   lots are drawn in block 2 (bare "lots" or "lot" also works)\n'
+    '  "use map"    source plate barcodes are drawn in block 2 (bare "map" also works)\n'
+    '  "use biomek" lots come from a Biomek worklist tab (bare "biomek" also works)\n'
+    '  "NA", "n/a", "n.a.", "n.a", "none"   no source plate; each compound gets the newest '
+    'lot registered by USERS\n'
+    '  one or more source plate barcodes separated by ";", e.g. "PLATE1-MA01; PLATE2-MA01"')
 
 
 NO_SOURCE_PLATE_WORDS = {'na', 'n/a', 'n.a', 'n.a.', 'none'}
