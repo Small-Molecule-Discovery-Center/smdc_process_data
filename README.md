@@ -18,7 +18,7 @@ A set of functions to preprocess various kinds of raw data for upload or further
 
 #### database_interactions
 Notebooks and modules for querying HiTS, making plate maps and entering new data.
-Open notebooks from this folder (after `python -m pip install -e '.[upload]'`, see below) so `import plate_maps`
+Open notebooks from this folder (after `uv sync` or `python -m pip install -e .`, see below) so `import plate_maps`
 etc. work without any `sys.path` edits.
 
 - **`prepare_hits_upload.ipynb`**: the operator notebook for a HiTS data upload. It follows
@@ -59,9 +59,11 @@ example data files for PAMPA and Bruker SPR
 
 ### Install shared utilities
 
-From this checkout, run `python -m pip install -e .`. Add an extra for the tools that need more:
-`python -m pip install -e '.[upload]'` for `database_interactions` (plate maps, the EnVision
-check and `prepare_hits_upload.ipynb`), or `'.[tethering]'` for the tethering plots.
+From this checkout, run `uv sync`, which builds `.venv` with this repo, everything the plate
+maps, upload notebook and `plot_curves` import, and JupyterLab. Without uv, run
+`python -m pip install -e .` (add `pip install jupyterlab` if you need it). The extras add the
+optional pieces: `'.[upload]'` adds `rapidfuzz` for fuzzy barcode matching in the EnVision
+check, and `'.[tethering]'` adds Pillow for the tethering plots.
 This is the canonical source of the `smdc-data-proc` distribution, formerly
 installed from data-proc. Reinstall from here in each consuming environment.
 Imports remain `import raw_data_parsers`, `import mysql_cnx`, and
