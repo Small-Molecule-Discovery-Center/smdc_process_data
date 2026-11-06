@@ -252,3 +252,35 @@ def test_block_1_mixing_numbers_and_text_raises():
     sheet = _sheet([lambda r, c: 1000 + c, lambda r, c: 'oops' if c == 2 else 10.0])
     with pytest.raises(ValueError, match='mixes concentrations with text'):
         pm.get_concentration_info(_dids(), sheet)
+
+
+@pytest.mark.parametrize('typed', [
+    r'Z:\SMDC\Screens\Jinsu\Copy of DR Upload.xlsx',
+    'Z:/SMDC/Screens/Jinsu/Copy of DR Upload.xlsx',
+    r'\\montreal\Shared\SMDC\Screens\Jinsu\Copy of DR Upload.xlsx',
+    '/Volumes/Shared/SMDC/Screens/Jinsu/Copy of DR Upload.xlsx',
+    '/mnt/z/SMDC/Screens/Jinsu/Copy of DR Upload.xlsx',
+])
+def test_share_paths_typed_anywhere_resolve_on_this_machine(tmp_path, typed):
+    target = tmp_path / 'SMDC' / 'Screens' / 'Jinsu' / 'Copy of DR Upload.xlsx'
+    target.parent.mkdir(parents=True)
+    target.write_text('x')
+    assert pm.resolve_share_path(typed, share_root=str(tmp_path)) == str(target)
+
+
+def test_existing_and_non_share_paths_are_left_alone(tmp_path):
+    assert pm.resolve_share_path(str(tmp_path), share_root='/nowhere') == str(tmp_path)
+    assert pm.resolve_share_path('./', share_root='/nowhere') == './'
+    assert pm.resolve_share_path(r'C:\Users\me\x.xlsx', share_root='/nowhere') == r'C:\Users\me\x.xlsx'
+
+
+def test_folder_pipeline_reads_a_windows_infile_from_wsl(tmp_path, monkeypatch):
+    seen = {}
+    def fake_read(infile):
+        seen['infile'] = infile
+        raise RuntimeError('stop')
+    monkeypatch.setattr(pm, '_read_info_sheet', fake_read)
+    with pytest.raises(RuntimeError, match='stop'):
+        pm.make_dr_platemaps_and_folders(infile=r'Z:\SMDC\a.xlsx', basedir=r'Z:\SMDC\toload',
+                                         share_root=str(tmp_path))
+    assert seen['infile'] == os.path.join(str(tmp_path), 'SMDC/a.xlsx')

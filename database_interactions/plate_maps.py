@@ -1124,11 +1124,36 @@ def _normalize_share_path(raw):
         p = p[30:]
     elif p.lower().startswith("/montreal.ucsf.edu/shared/"):
         p = p[26:]
+    elif re.match(r'^/*montreal/shared/', p, flags=re.IGNORECASE):
+        p = re.sub(r'^/*montreal/shared/', '', p, flags=re.IGNORECASE)  # UNC \\montreal\Shared\
     elif p.startswith('/'):
         # Must stay last: a leading slash would make os.path.join ignore the
         # share root entirely and return an absolute path.
         p = p[1:]
     return p
+
+
+_SHARE_PREFIX = re.compile(
+    r'^(?:[AYZayz]:[\\/]|\\\\|//|/Volumes/Shared/|/mnt/[A-Za-z]/|smb://|/shared/|shared/|Montreal/Shared/)',
+    re.IGNORECASE)
+
+
+def resolve_share_path(path, share_root=None):
+    r"""Turn a share path typed on any machine into one that works on this one.
+
+    A path that already exists is returned unchanged. Otherwise, if it looks
+    like a Montreal share path (Z:\..., \\server\..., /Volumes/Shared/...,
+    /mnt/z/..., smb://...), it is re-rooted on this machine's share mount, so
+    a Z:\ path copied from File Explorer works in WSL (/mnt/z/...) and a Mac
+    path works on Windows. Anything else (relative paths, other folders) is
+    returned unchanged.
+    """
+    if path is None:
+        return path
+    p = str(path)
+    if os.path.exists(p) or not _SHARE_PREFIX.match(p):
+        return p
+    return os.path.join(share_root or default_share_root(), _normalize_share_path(p))
 
 
 def _read_info_sheet(infile):
@@ -1820,6 +1845,8 @@ def make_dr_platemaps_and_folders(infile='', users=[("Amanda", "Paulson")], base
 
     # read plate layout file (shared with clean_up_folders)
     share_root = share_root or default_share_root()
+    infile = resolve_share_path(infile, share_root)
+    basedir = resolve_share_path(basedir, share_root)
     dp, info = _read_info_sheet(infile)
 
     # One instrument file may back several plates, so group by file.
@@ -1913,6 +1940,8 @@ def clean_up_folders(infile=None, basedir='./', delete_orig=False, share_root=No
     could fail to find a folder that plainly existed.
     """
     # read data (shared with make_dr_platemaps_and_folders)
+    infile = resolve_share_path(infile, share_root)
+    basedir = resolve_share_path(basedir, share_root)
     dp, info = _read_info_sheet(infile)
 
     # Work out every move first and refuse to start if any would overwrite a
