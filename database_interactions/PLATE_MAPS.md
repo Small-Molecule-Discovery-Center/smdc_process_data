@@ -235,7 +235,7 @@ Matched as a **case-insensitive substring**:
 
 | Value | Behaviour |
 |---|---|
-| `n.a.` | No source plate exists (compounds added by hand). Source plate and well become the literal string `NA`. |
+| `n.a.` | No source plate exists (compounds added by hand). Source plate and well become the literal string `NA`, and each compound gets the newest lot registered by `users` (the notebook's `USERS`), unless the lot is pinned as `285699-2` in block 0. |
 | `lot` (e.g. `use lots`) | Lots are drawn in block 2. Source plates are then looked up from (SMDC_ID, Lot). |
 | blank | **An error** for dose-response uploads, raised before any folder is made. It used to mean `use lots`, which hid a forgotten Source_plate until the spot-check. |
 | `map` | Source plate barcodes are drawn in block 2, i.e. wells came from different plates. |
