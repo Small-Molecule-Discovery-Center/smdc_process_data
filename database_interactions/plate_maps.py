@@ -877,10 +877,12 @@ def read_platemap_block(plate_map=None, block=0, value_name='SMDC_ID', size=384)
     """ Read one grid block out of a block-formatted plate map sheet.
 
     THE BLOCK CONVENTION (this is the thing to understand about the workbook):
-    a single sheet stacks several plate-shaped grids vertically, each one row
-    label column + N data columns, separated by one blank row. So for a 384w
-    sheet, rows 0-15 are block 0, row 16 is blank, rows 17-32 are block 1, and
-    so on: stride = plate_rows + 1.
+    a single sheet stacks several plate-shaped grids vertically. Each block has
+    a header row of column numbers (1, 2, ... N) and then one row per plate
+    row, with the row label (A, B, ...) in the first column. Completely blank
+    rows are dropped first, so blank lines between blocks don't matter. Blocks
+    are found by their A..P (A..AF for 1536) label runs, so a sheet without
+    the per-block header rows also reads correctly.
 
     By convention in this pipeline:
         block 0 -> SMDC IDs
@@ -916,11 +918,10 @@ def read_platemap_block(plate_map=None, block=0, value_name='SMDC_ID', size=384)
     cols = ['row']
     cols.extend(range(1, plate_cols + 1))
     # Find each block by its row labels (A, B, ... in the first column) rather
-    # than by a fixed stride. That reads both layouts in use: blocks separated
-    # by a blank row only, and blocks with their own header row (label, 1, 2,
-    # ...). Empty rows anywhere are ignored. A fixed stride of plate_rows + 1
-    # after dropna silently shifted every later block by one row when the
-    # separator was only a blank row.
+    # than by a fixed stride. The real maps have a header row per block, which
+    # the old stride of plate_rows + 1 read correctly. A sheet that left out
+    # those header rows would have been shifted by one row per block under the
+    # stride; label matching reads both.
     sheet = plate_map.dropna(how='all', axis='index').reset_index(drop=True)
     labels = sheet.iloc[:, 0].astype(str).str.strip().str.upper().tolist()
     expected = _row_labels(plate_rows)
