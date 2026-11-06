@@ -224,3 +224,31 @@ def test_folder_pipeline_passes_each_plate_its_own_row(tmp_path, monkeypatch):
     folder = next((tmp_path / 'out').glob('2863*/toload_0/20260101'))
     assert (folder / 'grid_num.txt').read_text().split() == ['grid_num', 'P1', 'P2', 'P3', 'P4']
     assert (folder / 'run.csv').exists()
+
+
+def _dids():
+    return pd.DataFrame({'Destination well': ['A01', 'P24'], 'SMDC_ID': [1001, 1024]})
+
+
+def test_cherry_pick_map_without_block_1_leaves_concentration_blank():
+    sheet = _sheet([lambda r, c: 1000 + c])
+    out = pm.get_concentration_info(_dids(), sheet)
+    assert out['[compound] uM'].isna().all() and len(out) == 2
+
+
+def test_cherry_pick_block_1_with_plate_suffix_leaves_concentration_blank():
+    sheet = _sheet([lambda r, c: 1000 + c, lambda r, c: 'MA01' if (r, c) == ('A', 1) else None])
+    out = pm.get_concentration_info(_dids(), sheet)
+    assert out['[compound] uM'].isna().all()
+
+
+def test_block_1_concentrations_are_read():
+    sheet = _sheet([lambda r, c: 1000 + c, lambda r, c: 50000 if (r, c) == ('A', 1) else None])
+    out = pm.get_concentration_info(_dids(), sheet).set_index('Destination well')
+    assert out.loc['A01', '[compound] uM'] == 50000 and pd.isna(out.loc['P24', '[compound] uM'])
+
+
+def test_block_1_mixing_numbers_and_text_raises():
+    sheet = _sheet([lambda r, c: 1000 + c, lambda r, c: 'oops' if c == 2 else 10.0])
+    with pytest.raises(ValueError, match='mixes concentrations with text'):
+        pm.get_concentration_info(_dids(), sheet)

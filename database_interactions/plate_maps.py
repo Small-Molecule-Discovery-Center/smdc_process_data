@@ -873,6 +873,10 @@ def _row_labels(n):
     return (letters + ['A' + x for x in letters])[:n]
 
 
+class MissingBlockError(ValueError):
+    """The plate map sheet has fewer complete blocks than the one asked for."""
+
+
 def read_platemap_block(plate_map=None, block=0, value_name='SMDC_ID', size=384):
     """ Read one grid block out of a block-formatted plate map sheet.
 
@@ -886,7 +890,8 @@ def read_platemap_block(plate_map=None, block=0, value_name='SMDC_ID', size=384)
 
     By convention in this pipeline:
         block 0 -> SMDC IDs
-        block 1 -> concentrations in uM
+        block 1 -> concentrations in uM (optional: may be missing, or hold a
+                   plate suffix on cherry-pick maps)
         block 2 -> a context-dependent third field (Lot, Source plate, or
                    Assay ID), decided by the Info sheet's Source_plate and
                    Lot_info columns. See get_source_plate_info / get_lot_info.
@@ -928,7 +933,7 @@ def read_platemap_block(plate_map=None, block=0, value_name='SMDC_ID', size=384)
     starts = [i for i in range(len(labels) - plate_rows + 1)
               if labels[i:i + plate_rows] == expected]
     if block >= len(starts):
-        raise ValueError(
+        raise MissingBlockError(
             f"Plate map has {len(starts)} complete block(s) with rows A to {expected[-1]} in the "
             f"first column, so block {block} does not exist. Check the row labels and that no "
             "populated row was added inside a block."
@@ -1607,10 +1612,31 @@ def get_concentration_info(dids, maps):
     arithmetic in Excel compare equal across plates instead of differing in the
     last float bit.
     """
-    dums = read_platemap_block(plate_map=maps, block=1, value_name='[compound] uM')
+    # Block 1 is optional. Cherry-pick maps may have no block 1, or use it for
+    # a plate suffix instead of concentrations; the suffix and a whole-plate
+    # concentration are then passed in during plate registration. In both cases
+    # leave the concentration blank here, as the old fixed-stride reader did.
+    try:
+        dums = read_platemap_block(plate_map=maps, block=1, value_name='[compound] uM')
+    except MissingBlockError:
+        logger.info("No block 1 in the plate map; leaving concentrations blank")
+        dids['[compound] uM'] = np.nan
+        return dids
+    values = dums['[compound] uM'].dropna()
+    values = values[values.astype(str).str.strip() != '']
+    numeric = pd.to_numeric(values, errors='coerce')
+    if len(values) and numeric.isna().all():
+        logger.info("Block 1 holds text (for example a plate suffix), not "
+                    "concentrations; leaving concentrations blank")
+        dids['[compound] uM'] = np.nan
+        return dids
+    if numeric.isna().any():
+        bad = sorted(values[numeric.isna()].astype(str).unique())[:5]
+        raise ValueError(f"Block 1 mixes concentrations with text values {bad}. "
+                         "Fix those wells in the plate map.")
     dums['Destination well'] = dums.row + dums.col
     dids = dids.merge(dums[['Destination well', '[compound] uM']], how='left')
-    dids['[compound] uM'] = dids['[compound] uM'].astype(float).round(7)
+    dids['[compound] uM'] = pd.to_numeric(dids['[compound] uM'], errors='coerce').round(7)
     logger.info("Read concentrations and rounded to 7 decimal places")
     return dids
 
