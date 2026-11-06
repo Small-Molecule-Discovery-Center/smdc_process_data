@@ -408,3 +408,38 @@ def test_folder_pipeline_stops_before_writing_when_source_plate_is_blank(tmp_pat
         pm.make_dr_platemaps_and_folders('x.xlsx', basedir=str(tmp_path / 'out'), share_root=str(tmp_path))
     assert not (tmp_path / 'out').exists()
     assert pm.source_plate_barcodes(info) == []
+
+
+@pytest.mark.parametrize('value,mode', [
+    ('', 'blank'), (np.nan, 'blank'),
+    ('NA', 'na'), ('n/a', 'na'), ('N.A.', 'na'), ('none', 'na'), ('n.a. (by hand)', 'na'),
+    ('use lots', 'lot'), ('Lots', 'lot'), ('use map', 'map'), ('MAP', 'map'),
+    ('use biomek / use echo', 'biomek'),
+    ('SMDC-MAP-384-01-Eco1', 'barcodes'), ('PLOT12-MA01; X-MA01', 'barcodes'), ('NA-0042', 'barcodes'),
+])
+def test_source_plate_keywords_are_not_matched_inside_barcodes(value, mode):
+    assert pm._source_plate_mode(value) == mode
+
+
+def test_unknown_use_keyword_is_an_error():
+    with pytest.raises(ValueError, match="Unknown Source_plate keyword"):
+        pm._source_plate_mode('use plates')
+
+
+def test_info_sheet_keeps_na_typed_in_source_plate(tmp_path):
+    path = tmp_path / 'upload.xlsx'
+    info = pd.DataFrame({'Grid_num': ['P1', 'P2', 'P3'], 'Source_plate': ['NA', 'n/a', None],
+                         'Raw_assay_ID': [1, 1, 1], 'Assay_name': ['a'] * 3,
+                         'Date_of_screen': [20260101] * 3, 'Raw_data_file': ['r.csv'] * 3})
+    with pd.ExcelWriter(path) as xw:
+        info.to_excel(xw, sheet_name='Info', index=False)
+    _, read = pm._read_info_sheet(str(path))
+    assert read.Source_plate.iloc[0] == 'NA' and read.Source_plate.iloc[1] == 'n/a'
+    assert pd.isna(read.Source_plate.iloc[2])
+    with pytest.raises(ValueError, match='blank for P3'):
+        pm._check_source_plates(read)
+
+
+def test_source_plate_barcodes_skips_keywords_but_keeps_map_barcodes():
+    info = pd.DataFrame({'Source_plate': ['use lots', 'NA', 'SMDC-MAP-01; B2', 'B2\nB3']})
+    assert pm.source_plate_barcodes(info) == ['SMDC-MAP-01', 'B2', 'B3']

@@ -1213,10 +1213,16 @@ def _read_info_sheet(infile):
             dp['Info'] = pd.read_csv(infile)
         except Exception:
             dp['Sheet1'] = pd.read_csv(infile)
-    try:
-        info = dp['Info']
-    except KeyError:
-        info = dp['Sheet1']
+    info_sheet = 'Info' if 'Info' in dp else 'Sheet1'
+    info = dp[info_sheet]
+    # pandas reads cells like 'NA' and 'n/a' as empty. In Source_plate those
+    # mean "no source plate", so keep that column as typed (only truly empty
+    # cells become NaN). Same shape and index as `info`.
+    if 'xlsx' in infile:
+        raw = pd.read_excel(infile, engine='openpyxl', sheet_name=info_sheet,
+                            keep_default_na=False, na_values=[''])
+    else:
+        raw = pd.read_csv(infile, keep_default_na=False, na_values=[''])
 
     info = _standardize_info_columns(info)
     # Some workbooks carry a title row above the real header.
@@ -1224,6 +1230,9 @@ def _read_info_sheet(infile):
         info.columns = info.iloc[0]
         info = info.drop(index=0)
         info = _standardize_info_columns(info)
+    if 'Source_plate' in info.columns and raw.shape == dp[info_sheet].shape:
+        pos = list(info.columns).index('Source_plate')
+        info['Source_plate'] = raw.iloc[:, pos].reindex(info.index).values
 
     info = info.dropna(how='all', axis='index').reset_index(drop=True)
     info = info.dropna(subset='Date_of_screen', how='all', axis='index').reset_index(drop=True)
@@ -1239,7 +1248,35 @@ def _read_info_sheet(infile):
 SOURCE_PLATE_HELP = ("Fill in Source_plate for every plate in the Info tab: one or more source plate "
                      "barcodes separated by ';', 'use lots' (lots drawn in block 2), 'use map' (source "
                      "plate barcodes drawn in block 2), 'use biomek' (a Biomek worklist tab), or "
-                     "'n.a.' (no source plate).")
+                     "'NA' / 'n/a' / 'n.a.' (no source plate; lots from the newest lot registered by USERS).")
+
+
+NO_SOURCE_PLATE_WORDS = {'na', 'n/a', 'n.a', 'n.a.', 'none'}
+
+
+def _source_plate_mode(value):
+    """Which Source_plate rule a cell selects.
+
+    Returns 'blank', 'na', 'biomek', 'lot', 'map' or 'barcodes'. Keywords only
+    count when the cell starts with 'use ' or is the bare word ('lots',
+    'map', ...), so a real barcode that happens to contain 'MAP' or 'lot' is
+    still read as a barcode. 'NA', 'n/a', 'n.a.' and 'none' mean no source
+    plate.
+    """
+    v = _safe_lower(value).strip()
+    if v in ('', 'nan'):
+        return 'blank'
+    if v in NO_SOURCE_PLATE_WORDS or v.startswith('n.a.'):
+        return 'na'
+    if v.startswith('use ') or v in ('lot', 'lots', 'map', 'biomek'):
+        if 'biomek' in v:
+            return 'biomek'
+        if 'lot' in v:
+            return 'lot'
+        if 'map' in v:
+            return 'map'
+        raise ValueError(f"Unknown Source_plate keyword {value!r}. {SOURCE_PLATE_HELP}")
+    return 'barcodes'
 
 
 def _blank_source_plate_message(grid_nums):
@@ -1252,7 +1289,8 @@ def _check_source_plates(info):
         values = info['Source_plate']
     else:  # the column was empty in every row, so _read_info_sheet dropped it
         values = pd.Series([np.nan] * len(info), index=info.index)
-    blank = values.isna() | (values.astype(str).str.strip().isin(['', 'nan']))
+    modes = values.map(_source_plate_mode)  # also rejects unknown 'use ...' keywords up front
+    blank = modes == 'blank'
     if blank.any():
         raise ValueError(_blank_source_plate_message(info.loc[blank, 'Grid_num'].astype(str).tolist()))
 
@@ -1366,7 +1404,7 @@ def make_dr_platemaps(dp, row, users, basedir=None, replace_dict=None, control_d
     # Two shapes of input. Biomek worklists are already long format and already
     # name their source wells, so they skip block parsing entirely and only need
     # lots looked up. Everything else is a hand-drawn block grid.
-    if ('biomek' in source_plate_val):
+    if _source_plate_mode(source_plate_val) == "biomek":
         logger.info("Source plate is long format")
         dids = dp[grid_num[0:31]].copy()  # [0:31]: Excel truncates sheet names
         dids = _standardize_dids_columns(dids)
@@ -1423,18 +1461,21 @@ def make_dr_platemaps(dp, row, users, basedir=None, replace_dict=None, control_d
 def get_source_plate_info(row, dids, maps, cnx, replace_vals):
     """ Resolve Source plate / Source well for every destination well.
 
-    THE Source_plate CELL IS A DISPATCH LANGUAGE. Accepted values, matched as
-    case-insensitive substrings:
+    THE Source_plate CELL IS A DISPATCH LANGUAGE (see _source_plate_mode).
+    Keywords count only as 'use ...' or the bare word, so a barcode that
+    contains 'MAP' or 'lot' is still a barcode. Case-insensitive:
 
-        'n.a.'          no source plate exists (compounds added by hand).
-                        Source plate/well are literally 'NA'.
-        'lot'           lots are drawn in block 2 of the map; plates are then
+        'NA', 'n/a', 'n.a.', 'none'
+                        no source plate exists (compounds added by hand).
+                        Source plate/well are literally 'NA'; lots come from
+                        the newest lot registered by `users`.
+        'use lots'      lots are drawn in block 2 of the map; plates are then
                         looked up from (SMDC_ID, Lot).
-        ''              an error. Blank used to mean 'use lots', which hid a
-                        forgotten Source_plate until much later.
-        'map'           source plate barcodes are drawn in block 2 of the map,
+        'use map'       source plate barcodes are drawn in block 2 of the map,
                         i.e. wells came from different plates.
-        'biomek'        handled upstream in make_dr_platemaps, not here.
+        'use biomek'    handled upstream in make_dr_platemaps, not here.
+        blank           an error. Blank used to mean 'use lots', which hid a
+                        forgotten Source_plate until much later.
         anything else   treated as one or more literal barcodes, separated by
                         ';' and/or newlines. Every listed plate is pulled from
                         HiTS and joined on SMDC_ID, so a compound present on
@@ -1457,15 +1498,16 @@ def get_source_plate_info(row, dids, maps, cnx, replace_vals):
     dids = _standardize_dids_columns(dids)
     source_plate_raw = _series_get_ci(row, 'Source_plate', '')
     source_plate_val = _safe_lower(source_plate_raw)
+    mode = _source_plate_mode(source_plate_raw)
 
-    if 'n.a.' in source_plate_val:
+    if mode == 'na':
         logger.info("Source plate is N.A.")
         dids['Source plate'] = 'NA'
         dids['Source well'] = 'NA'
-    elif source_plate_val == '':
+    elif mode == 'blank':
         raise ValueError(_blank_source_plate_message(
             [str(_series_get_ci(row, 'Grid_num', '?'))]))
-    elif 'lot' in source_plate_val:
+    elif mode == 'lot':
         logger.info("Will get source plate info from lot lookup")
         try:
             lots = read_platemap_block(plate_map=maps, block=2, value_name='Lot')
@@ -1487,7 +1529,7 @@ def get_source_plate_info(row, dids, maps, cnx, replace_vals):
             lots['Destination well'] = lots.row + lots.col
             dids = dids.merge(lots[['Destination well', 'Lot']], how='left')
         source_plates = []
-    elif 'map' in source_plate_val:
+    elif mode == 'map':
         logger.info("Source plate is map")
         sps = read_platemap_block(plate_map=maps, block=2, value_name='Source plate')
         sps['Destination well'] = sps.row + sps.col
@@ -1603,7 +1645,7 @@ def get_lot_info(row, dids, maps, users, replace_vals):
     lot_info_val = _safe_lower(_series_get_ci(row, 'Lot_info', ''))
 
     if 'Lot' in dids.columns and dids.Lot.isna().any() and maps is not None and (
-            lot_info_val == 'use map' or ('map' in source_plate_val and 'biomek' not in source_plate_val)):
+            lot_info_val == 'use map' or _source_plate_mode(source_plate_val) == 'map'):
         # Some wells were pinned with '12346-1' in block 0; fill the rest from
         # stage 2 as if nothing had been pinned. Pinned lots always win.
         logger.info("Some lots pinned in block 0; filling the rest from the map settings")
@@ -1619,13 +1661,13 @@ def get_lot_info(row, dids, maps, users, replace_vals):
             aids = read_platemap_block(plate_map=maps, block=2, value_name='Lot')
             aids['Destination well'] = aids.row + aids.col
             dids = dids.merge(aids[['Destination well', 'Lot']], how='left')
-        elif 'map' in source_plate_val:
+        elif _source_plate_mode(source_plate_val) == 'map':
             logger.info("Lot info from plate map")
             ids, plates = _id_plate_pairs(dids)
             lots = lookup_lot_by_plate_and_ic_id(ids=ids, plates=plates, replace_vals=replace_vals, matched=True)
             lots.SMDC_ID = lots.SMDC_ID.astype(float)
             dids = dids.merge(lots, how='left')
-        elif 'biomek' in source_plate_val:
+        elif _source_plate_mode(source_plate_val) == 'biomek':
             logger.info("Lot info from source plate and well")
             lots = lookup_id_and_lot_by_plate_and_well(plates=dids['Source plate'].tolist(),
                                                        wells=dids['Source well'].tolist())
@@ -2145,7 +2187,7 @@ def _apply_control_flags_from_map(dids, dp, row, control_dict):
     """
     if not control_dict:
         return dids
-    if 'biomek' in _safe_lower(_series_get_ci(row, 'Source_plate', '')):
+    if _source_plate_mode(_series_get_ci(row, 'Source_plate', '')) == 'biomek':
         logger.info(f"{row.Grid_num}: Biomek worklist, no plate-map annotations to read for controls")
         return dids
     dids = dids.copy()
@@ -2437,8 +2479,10 @@ def source_plate_barcodes(info):
     if 'Source_plate' not in info.columns:
         return out
     for v in info['Source_plate'].dropna().astype(str):
-        for b in v.split(';'):
+        if _source_plate_mode(v) != 'barcodes':
+            continue
+        for b in v.replace('\n', ';').split(';'):
             b = b.strip()
-            if b and not b.lower().startswith(('use ', 'n.a')) and b not in out:
+            if b and b not in out:
                 out.append(b)
     return out
