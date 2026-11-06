@@ -915,24 +915,26 @@ def read_platemap_block(plate_map=None, block=0, value_name='SMDC_ID', size=384)
         raise ValueError(f"size must be 96, 384 or 1536; got {size}")
     cols = ['row']
     cols.extend(range(1, plate_cols + 1))
-    # Slice out this block's rows. Each block after the first starts with its
-    # own header row (label, 1, 2, ..., n), so the stride is plate_rows + 1.
-    # dropna(how='all') first, so empty rows users add between blocks do not
-    # shift the boundaries. A layout with only a blank separator row and no
-    # header would shift every later block by one row, so the row labels are
-    # checked below rather than trusted.
-    df = plate_map.dropna(how='all', axis='index').iloc[
-        (plate_rows + 1) * block:(plate_rows + 1) * block + plate_rows, 0:plate_cols + 1]
-    df.columns = cols
+    # Find each block by its row labels (A, B, ... in the first column) rather
+    # than by a fixed stride. That reads both layouts in use: blocks separated
+    # by a blank row only, and blocks with their own header row (label, 1, 2,
+    # ...). Empty rows anywhere are ignored. A fixed stride of plate_rows + 1
+    # after dropna silently shifted every later block by one row when the
+    # separator was only a blank row.
+    sheet = plate_map.dropna(how='all', axis='index').reset_index(drop=True)
+    labels = sheet.iloc[:, 0].astype(str).str.strip().str.upper().tolist()
     expected = _row_labels(plate_rows)
-    found = df['row'].astype(str).str.strip().str.upper().tolist()
-    if found != expected:
+    starts = [i for i in range(len(labels) - plate_rows + 1)
+              if labels[i:i + plate_rows] == expected]
+    if block >= len(starts):
         raise ValueError(
-            f"Block {block} of this plate map does not start at row A and run to row "
-            f"{expected[-1]} (found {found[:3]}...{found[-2:]}). Each block needs its own header "
-            "row (label, 1, 2, ...) above row A; empty rows between blocks are fine."
+            f"Plate map has {len(starts)} complete block(s) with rows A to {expected[-1]} in the "
+            f"first column, so block {block} does not exist. Check the row labels and that no "
+            "populated row was added inside a block."
         )
-    df['row'] = found
+    df = sheet.iloc[starts[block]:starts[block] + plate_rows, 0:plate_cols + 1].copy()
+    df.columns = cols
+    df['row'] = expected
     df = df.melt(id_vars=['row'], value_vars=range(1, plate_cols + 1), ignore_index=True,
                  value_name=value_name, var_name='col')
     # Zero-pad so row + col == 'A01', matching HiTS well coordinates.
