@@ -156,22 +156,23 @@ real header is handled.
 ### The plate sheets: the block convention
 
 **This is the thing to understand about the format.** A single sheet stacks
-several plate-shaped grids vertically, each one row-label column plus N data
-columns, separated by **one blank row** (a header row of column numbers above
-each block works too):
+several plate-shaped grids vertically. Each block has a header row of column
+numbers, then one row per plate row with the row label in the first column.
+Completely blank rows are dropped before reading, so blank lines between blocks
+don't matter:
 
 ```
-      1    2    3   ...  24
+      1    2    3   ...  24     <- header row
  A  [                      ]
  B  [                      ]   <- BLOCK 0: SMDC IDs
 ...  [                      ]
  P  [                      ]
-                                <- one blank row
+      1    2    3   ...  24     <- header row
  A  [                      ]
  B  [                      ]   <- BLOCK 1: concentrations in uM
 ...  [                      ]
  P  [                      ]
-                                <- one blank row
+      1    2    3   ...  24     <- header row
  A  [                      ]
  B  [                      ]   <- BLOCK 2: context-dependent, see below
 ...  [                      ]
@@ -179,11 +180,11 @@ each block works too):
 ```
 
 Blocks are found by their row labels (`A` to `P`, or `A` to `AF` for 1536) in the
-first column. Empty rows are ignored, so extra blank lines are harmless. If a
-populated row is added inside a block, that block's labels don't run A to P, it
-isn't found, and the run stops with an error that says so. (Before Nov 2026 the
-code used a fixed stride, which misread blank-row-separated sheets: block 1 took
-block 2's row A as its own row A, and block 2 lost rows A and B.)
+first column, so a sheet that leaves out the per-block header rows also reads
+correctly. If a populated row is added inside a block, that block's labels don't
+run A to P, it isn't found, and the run stops with an error that says so. (Before
+Nov 2026 the code used a fixed stride of rows + 1. That was right for the real
+maps, which have header rows, but would have shifted a sheet without them.)
 
 **Block 2 is overloaded.** Its meaning depends on `Source_plate` and `Lot_info`:
 
