@@ -388,6 +388,23 @@ def test_all_pinned_lots_need_no_block_2(monkeypatch):
     dids = pd.DataFrame({'Destination well': ['A01'], 'SMDC_ID': [12346.0], 'Lot': [1.0]})
     monkeypatch.setattr(pm, 'lookup_plate_by_lot_num', lambda ids, lot_nums, **k: pd.DataFrame(
         {'SMDC_ID': [12346.0], 'Lot': [1.0], 'Source plate': ['SP1'], 'Source well': ['A01']}))
-    out = pm.get_source_plate_info(pd.Series({'Grid_num': 'P1', 'Source_plate': ''}), dids, sheet,
+    out = pm.get_source_plate_info(pd.Series({'Grid_num': 'P1', 'Source_plate': 'use lots'}), dids, sheet,
                                    cnx=None, replace_vals=[])
     assert _well(out, 'A01')['Source plate'] == 'SP1'
+
+
+def test_blank_source_plate_is_an_error_not_use_lots():
+    dids = pd.DataFrame({'Destination well': ['A01'], 'SMDC_ID': [1001.0]})
+    with pytest.raises(ValueError, match='Source_plate is blank for P1'):
+        pm.get_source_plate_info(pd.Series({'Grid_num': 'P1', 'Source_plate': np.nan}), dids,
+                                 _sheet([lambda r, c: 1000 + c]), cnx=None, replace_vals=[])
+
+
+def test_folder_pipeline_stops_before_writing_when_source_plate_is_blank(tmp_path, monkeypatch):
+    info = pd.DataFrame({'Grid_num': ['P1', 'P2'], 'Raw_assay_ID': [1, 1], 'Assay_name': ['a', 'a'],
+                         'Date_of_screen': [20260101, 20260101], 'Raw_data_file': ['r.csv', 'r.csv']})
+    monkeypatch.setattr(pm, '_read_info_sheet', lambda infile: ({}, info))
+    with pytest.raises(ValueError, match='P1, P2'):
+        pm.make_dr_platemaps_and_folders('x.xlsx', basedir=str(tmp_path / 'out'), share_root=str(tmp_path))
+    assert not (tmp_path / 'out').exists()
+    assert pm.source_plate_barcodes(info) == []
