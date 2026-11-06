@@ -231,15 +231,17 @@ characters, they will collide.
 ## The `Source_plate` dispatch language
 
 The `Source_plate` cell tells the pipeline how to find where compounds came from.
-Matched as a **case-insensitive substring**:
+Case-insensitive. A keyword only counts as `use ...` or the bare word, so a real
+barcode that contains `MAP` or `lot` is still read as a barcode:
 
 | Value | Behaviour |
 |---|---|
-| `n.a.` | No source plate exists (compounds added by hand). Source plate and well become the literal string `NA`, and each compound gets the newest lot registered by `users` (the notebook's `USERS`), unless the lot is pinned as `285699-2` in block 0. |
-| `lot` (e.g. `use lots`) | Lots are drawn in block 2. Source plates are then looked up from (SMDC_ID, Lot). |
+| `NA`, `n/a`, `n.a.`, `none` | No source plate exists (compounds added by hand). Source plate and well become the literal string `NA`, and each compound gets the newest lot registered by `users` (the notebook's `USERS`), unless the lot is pinned as `285699-2` in block 0. |
+| `use lots` (or `lots`) | Lots are drawn in block 2. Source plates are then looked up from (SMDC_ID, Lot), on MA01 plates. |
+| `use map` (or `map`) | Source plate barcodes are drawn in block 2, i.e. wells came from different plates. |
+| `use biomek` | The sheet is already a long-format Biomek worklist, not a block grid. Source wells are read directly from it; block parsing is skipped entirely. This branch also **overwrites** the worklist's SMDC ID column with the database's answer. |
 | blank | **An error** for dose-response uploads, raised before any folder is made. It used to mean `use lots`, which hid a forgotten Source_plate until the spot-check. |
-| `map` | Source plate barcodes are drawn in block 2, i.e. wells came from different plates. |
-| `biomek` | The sheet is already a long-format Biomek worklist, not a block grid. Source wells are read directly from it; block parsing is skipped entirely. This branch also **overwrites** the worklist's SMDC ID column with the database's answer. |
+| any other `use ...` | An error naming the unknown keyword. |
 | anything else | Treated as one or more literal barcodes, separated by `;` and/or newlines. |
 
 **Watch out with literal barcodes**: every listed plate is pulled and joined on
