@@ -1441,9 +1441,25 @@ def get_source_plate_info(row, dids, maps, cnx, replace_vals):
         dids['Source well'] = 'NA'
     elif ('lot' in source_plate_val) or (source_plate_val == ''):
         logger.info("Will get source plate info from lot lookup")
-        lots = read_platemap_block(plate_map=maps, block=2, value_name='Lot')
-        lots['Destination well'] = lots.row + lots.col
-        dids = dids.merge(lots[['Destination well', 'Lot']], how='left')
+        try:
+            lots = read_platemap_block(plate_map=maps, block=2, value_name='Lot')
+        except MissingBlockError:
+            # Fine when every compound well was pinned as '12346-1' in block 0.
+            if 'Lot' in dids.columns and not dids.loc[dids.SMDC_ID.notna(), 'Lot'].isna().any():
+                lots = None
+            else:
+                raise
+        if lots is None:
+            pass
+        elif 'Lot' in dids.columns:
+            lots['Destination well'] = lots.row + lots.col
+            # Some lots were pinned with '12346-1' in block 0. Those win; the
+            # other wells take their lot from block 2.
+            block2 = dids['Destination well'].map(lots.set_index('Destination well')['Lot'])
+            dids['Lot'] = dids['Lot'].where(dids['Lot'].notna(), block2)
+        else:
+            lots['Destination well'] = lots.row + lots.col
+            dids = dids.merge(lots[['Destination well', 'Lot']], how='left')
         source_plates = []
     elif 'map' in source_plate_val:
         logger.info("Source plate is map")
@@ -1559,6 +1575,17 @@ def get_lot_info(row, dids, maps, users, replace_vals):
     dids = _standardize_dids_columns(dids)
     source_plate_val = _safe_lower(_series_get_ci(row, 'Source_plate', ''))
     lot_info_val = _safe_lower(_series_get_ci(row, 'Lot_info', ''))
+
+    if 'Lot' in dids.columns and dids.Lot.isna().any() and maps is not None and (
+            lot_info_val == 'use map' or ('map' in source_plate_val and 'biomek' not in source_plate_val)):
+        # Some wells were pinned with '12346-1' in block 0; fill the rest from
+        # stage 2 as if nothing had been pinned. Pinned lots always win.
+        logger.info("Some lots pinned in block 0; filling the rest from the map settings")
+        pinned = dids.dropna(subset=['Lot']).set_index('Destination well')['Lot']
+        rest = get_lot_info(row, dids.drop(columns='Lot'), maps, users, replace_vals)
+        from_pin = rest['Destination well'].map(pinned)
+        rest['Lot'] = from_pin.where(from_pin.notna(), rest['Lot'])
+        return rest
 
     if 'Lot' not in dids.columns:
         if (lot_info_val == 'use map') and (maps is not None):
@@ -1768,17 +1795,26 @@ def get_destination_plate_info(dp, row, replace_dict, control_dict=None):
     if control_labels:
         dids.loc[map_labels.isin(control_labels), 'SMDC_ID'] = np.nan
 
-    if sum(dids.SMDC_ID.astype(str).str.contains('-')) > 0:
-        logger.info("Getting lots from SMDC IDs with dashes")
-        dids[['SMDC_ID', 'Lot']] = dids.SMDC_ID.astype(str).str.split('-', expand=True)
-        dids.Lot = dids.Lot.astype(float)
-
     # Null out (or remap) control/solvent labels so the column can become float.
-    # An unrecognised text label survives this loop and blows up the cast below
-    # with a ValueError naming the offending string, which is the intended
-    # failure mode: add it to replace_dict.
+    # Done before the ID-lot split so a label with a dash in it ('No-Enzyme')
+    # is not mistaken for one.
     for key, value in replace_dict.items():
         dids.SMDC_ID = dids.SMDC_ID.replace(key, value)
+
+    # '12346-1' pins SMDC ID 12346 to lot 1. Only cells that are exactly
+    # <digits>-<digits> (spaces allowed) are split; other wells keep Lot empty
+    # and get their lot from the usual lookups in get_lot_info.
+    id_lot = dids.SMDC_ID.astype(str).str.extract(r'^\s*(\d+)\s*-\s*(\d+)\s*$')
+    pinned = id_lot[0].notna()
+    if pinned.any():
+        logger.info(f"Read {int(pinned.sum())} SMDC ID-lot cell(s) like 12346-1")
+        dids['Lot'] = np.nan
+        dids.loc[pinned, 'SMDC_ID'] = id_lot.loc[pinned, 0]
+        dids.loc[pinned, 'Lot'] = id_lot.loc[pinned, 1].astype(float)
+
+    # An unrecognised text label (or a malformed ID like '12346-1-2') reaches
+    # this cast and raises a ValueError naming the offending string, which is
+    # the intended failure mode: fix the map or add the label to replace_dict.
     dids.SMDC_ID = dids.SMDC_ID.astype(float)
 
     dids['Destination well'] = dids.row + dids.col

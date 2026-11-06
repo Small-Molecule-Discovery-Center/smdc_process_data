@@ -1,6 +1,7 @@
 """Regression tests for the PR #3 review findings in older plate_maps code."""
 import os
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -327,3 +328,66 @@ def test_load_folders_needs_the_returned_info():
     info = pd.DataFrame({'Grid_num': ['P1']})
     info.attrs['load_folders'] = ['/x/1_a/toload_0/20260101']
     assert pm.load_folders(info) == ['/x/1_a/toload_0/20260101']
+
+
+def _well(dids, w):
+    return dids[dids['Destination well'] == w].iloc[0]
+
+
+def test_id_dash_lot_cells_pin_the_lot_and_leave_other_wells_open():
+    def ids(r, c):
+        return {1: '12346-1', 2: ' 12347 - 3 ', 3: 'No-Enzyme'}.get(c, 1000 + c)
+    dp = {'P1': _sheet([ids])}
+    row = pd.Series({'Grid_num': 'P1', 'Raw_assay_ID': 1})
+    dids, _ = pm.get_destination_plate_info(dp, row, {'No-Enzyme': float('nan')}, {})
+    a01, a02, a03, a04 = (_well(dids, w) for w in ['A01', 'A02', 'A03', 'A04'])
+    assert (a01.SMDC_ID, a01.Lot) == (12346, 1)
+    assert (a02.SMDC_ID, a02.Lot) == (12347, 3)
+    assert pd.isna(a03.SMDC_ID)                    # a label with a dash is not a lot
+    assert a04.SMDC_ID == 1004 and pd.isna(a04.Lot)  # left for the lot lookups
+
+
+def test_malformed_id_dash_lot_fails_loudly():
+    dp = {'P1': _sheet([lambda r, c: '12346-1-2' if c == 1 else 1000 + c])}
+    row = pd.Series({'Grid_num': 'P1', 'Raw_assay_ID': 1})
+    with pytest.raises(ValueError, match='12346-1-2'):
+        pm.get_destination_plate_info(dp, row, {}, {})
+
+
+def test_pinned_lots_win_and_use_map_fills_the_rest():
+    sheet = _sheet([lambda r, c: '12346-1' if c == 1 else 1000 + c,
+                    lambda r, c: 10.0,
+                    lambda r, c: 7])
+    dids = pd.DataFrame({'Destination well': ['A01', 'A02'], 'SMDC_ID': [12346.0, 1002.0],
+                         'Lot': [1.0, np.nan], 'Source plate': ['SP1', 'SP1']})
+    row = pd.Series({'Grid_num': 'P1', 'Source_plate': 'SP1', 'Lot_info': 'use map'})
+    out = pm.get_lot_info(row, dids, sheet, users=[], replace_vals=[])
+    assert _well(out, 'A01').Lot == 1 and _well(out, 'A02').Lot == 7
+
+
+def test_lot_source_plate_mode_keeps_pins_and_reads_block_2_for_the_rest(monkeypatch):
+    sheet = _sheet([lambda r, c: 1000 + c, lambda r, c: 10.0, lambda r, c: 7])
+    dids = pd.DataFrame({'Destination well': ['A01', 'A02'], 'SMDC_ID': [12346.0, 1002.0],
+                         'Lot': [1.0, np.nan]})
+    seen = {}
+
+    def fake_lookup(ids, lot_nums, **k):
+        seen['pairs'] = list(zip(ids, lot_nums))
+        return pd.DataFrame({'SMDC_ID': [12346.0, 1002.0], 'Lot': [1.0, 7.0],
+                             'Source plate': ['SP1', 'SP2'], 'Source well': ['A01', 'B01']})
+    monkeypatch.setattr(pm, 'lookup_plate_by_lot_num', fake_lookup)
+    row = pd.Series({'Grid_num': 'P1', 'Source_plate': 'use lots'})
+    out = pm.get_source_plate_info(row, dids, sheet, cnx=None, replace_vals=[])
+    assert sorted(seen['pairs']) == [('1002.0', '7'), ('12346.0', '1.0')] or \
+        sorted(seen['pairs']) == [('1002.0', '7.0'), ('12346.0', '1.0')]
+    assert _well(out, 'A01')['Source plate'] == 'SP1' and _well(out, 'A02')['Source plate'] == 'SP2'
+
+
+def test_all_pinned_lots_need_no_block_2(monkeypatch):
+    sheet = _sheet([lambda r, c: 1000 + c, lambda r, c: 10.0])
+    dids = pd.DataFrame({'Destination well': ['A01'], 'SMDC_ID': [12346.0], 'Lot': [1.0]})
+    monkeypatch.setattr(pm, 'lookup_plate_by_lot_num', lambda ids, lot_nums, **k: pd.DataFrame(
+        {'SMDC_ID': [12346.0], 'Lot': [1.0], 'Source plate': ['SP1'], 'Source well': ['A01']}))
+    out = pm.get_source_plate_info(pd.Series({'Grid_num': 'P1', 'Source_plate': ''}), dids, sheet,
+                                   cnx=None, replace_vals=[])
+    assert _well(out, 'A01')['Source plate'] == 'SP1'
