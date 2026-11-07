@@ -29,6 +29,7 @@ def load_csv_files(load_dir="./toload"):
         dfs: List of dataframes containing the data from each CSV file
         filenames: List of filenames corresponding to each dataframe
     """
+    load_dir = _existing_dir(load_dir)
     filenames=[]
     dfs=[]
     for root, dirs, files in os.walk(load_dir):
@@ -100,6 +101,27 @@ def prepare_data_for_upload(df,ctrls='cols', neg_ctrl_locs=[1,2], pos_ctrl_locs=
 
 
 ####### ENVISION FILE PARSING FUNCTIONS #######
+
+
+def _existing_dir(load_dir):
+    """load_dir as a folder that exists, or a FileNotFoundError naming it.
+
+    os.walk on a missing folder yields nothing, so a wrong path used to look
+    like "0 files, nothing to fix". A Z:\\ or /Volumes/Shared/ path is mapped
+    to where the share is mounted here (plate_maps.resolve_share_path) when
+    plate_maps can be imported, so a path copied on Windows works in WSL.
+    """
+    path = str(load_dir)
+    try:
+        from plate_maps import resolve_share_path
+        path = resolve_share_path(path)
+    except ImportError:
+        pass
+    if not os.path.isdir(path):
+        raise FileNotFoundError(f"Folder not found: {load_dir!r}"
+                                + (f" (looked for {path!r})" if path != str(load_dir) else "")
+                                + ". Check the path, and that the share is mounted.")
+    return path
 
 
 def parse_envision_files(plate_type='384', load_dir="./toload"):
@@ -186,6 +208,7 @@ def _envision_load_csv_files(load_dir="./toload", plate_type='384'):
         dfs: List of dataframes containing the data from each CSV file
         filenames: List of filenames corresponding to each dataframe
     """
+    load_dir = _existing_dir(load_dir)
     filenames=[]
     dfs=[]
     for root, dirs, files in os.walk(load_dir):
@@ -436,6 +459,7 @@ def ensure_calc_spacing_in_dir(load_dir: str, required_empty_lines: int = 3) -> 
     Returns:
         (files_seen, files_changed, total_inserted)
     """
+    load_dir = _existing_dir(load_dir)
     files_seen = 0
     files_changed = 0
     total_inserted = 0
@@ -453,8 +477,13 @@ def ensure_calc_spacing_in_dir(load_dir: str, required_empty_lines: int = 3) -> 
                 files_changed += 1
                 total_inserted += inserted
 
-    logger.info(
-        f"Processed {files_seen} CSV file(s) in '{load_dir}': changed {files_changed}, inserted {total_inserted} blank line(s)")
+    if files_seen == 0:
+        logger.warning(f"No CSV files found under '{load_dir}'. Is this the right folder?")
+    elif files_changed == 0:
+        logger.info(f"Found {files_seen} CSV file(s) in '{load_dir}': spacing already OK, nothing changed")
+    else:
+        logger.info(f"Found {files_seen} CSV file(s) in '{load_dir}': fixed spacing in {files_changed}, "
+                    f"inserted {total_inserted} blank line(s)")
     return files_seen, files_changed, total_inserted
 
 
@@ -646,6 +675,8 @@ def fill_zprime_blocks_in_dir(load_dir: str, require_prefix: bool = True) -> Tup
     Returns:
         (files_changed, blocks_filled_total)
     """
+    load_dir = _existing_dir(load_dir)
+    files_seen = 0
     files_changed = 0
     blocks_total = 0
     for root, dirs, files in os.walk(load_dir):
@@ -655,11 +686,18 @@ def fill_zprime_blocks_in_dir(load_dir: str, require_prefix: bool = True) -> Tup
             if file.startswith('._'):
                 continue
             csv_path = os.path.join(root, file)
+            files_seen += 1
             changed, blocks = fill_zprime_blocks_in_file(csv_path, require_prefix=require_prefix)
             if changed:
                 files_changed += 1
                 blocks_total += blocks
-    logger.info(f"Filled Z' blocks in {files_changed} file(s), total blocks: {blocks_total}")
+    if files_seen == 0:
+        logger.warning(f"No CSV files found under '{load_dir}'. Is this the right folder?")
+    elif files_changed == 0:
+        logger.info(f"Found {files_seen} CSV file(s) in '{load_dir}': no empty Z' blocks, nothing changed")
+    else:
+        logger.info(f"Found {files_seen} CSV file(s) in '{load_dir}': filled {blocks_total} empty Z' "
+                    f"block(s) in {files_changed} file(s)")
     return files_changed, blocks_total
 
 

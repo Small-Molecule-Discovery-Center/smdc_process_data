@@ -1,3 +1,4 @@
+import pytest
 """Regression checks for the reusable EnVision reader helpers."""
 
 import unittest
@@ -117,3 +118,20 @@ class EnvisionDataParsingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_tidy_steps_refuse_a_missing_folder(tmp_path):
+    missing = str(tmp_path / 'nope')
+    for fn in (raw_data_parsers.ensure_calc_spacing_in_dir, raw_data_parsers.fill_zprime_blocks_in_dir,
+               raw_data_parsers._envision_load_csv_files):
+        with pytest.raises(FileNotFoundError, match='Folder not found'):
+            fn(missing)
+
+
+def test_tidy_steps_say_how_many_files_they_found(tmp_path, caplog):
+    (tmp_path / 'a.csv').write_text('x,y\n1,2\n')
+    (tmp_path / 'b.csv').write_text('x,y\n1,2\n')
+    with caplog.at_level('INFO', logger='raw_data_parsers'):
+        assert raw_data_parsers.ensure_calc_spacing_in_dir(str(tmp_path)) == (2, 0, 0)
+        assert raw_data_parsers.fill_zprime_blocks_in_dir(str(tmp_path)) == (0, 0)
+    assert 'Found 2 CSV file(s)' in caplog.text and 'nothing changed' in caplog.text
