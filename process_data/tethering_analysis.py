@@ -10,13 +10,14 @@ import sys
 import glob
 from PIL import Image
 
-try:
-    sys.path.append('/Users/apaulson/repos/data-proc/')
-    import plate_maps as pm
-    import plot_curves as pc
-
-except ImportError:
-    pass
+# plate_maps and plot_curves live in database_interactions/ and data_viz/ of
+# this repo; find them relative to this file rather than a personal checkout.
+_REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+for _folder in ('database_interactions', 'data_viz'):
+    if os.path.join(_REPO, _folder) not in sys.path:
+        sys.path.insert(0, os.path.join(_REPO, _folder))
+import plate_maps as pm
+import plot_curves as pc
 
 import logging
 logger = logging.getLogger()

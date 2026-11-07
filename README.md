@@ -31,6 +31,7 @@ After `uv sync` or `pip install -e .` (see below), import these from any folder 
   `/mnt/z/` (Windows/WSL). For another drive, pass `share_root=` or set `smdc_share_root`.
 - **`check_grid_num.py`**: checks each `grid_num.txt` against the plates and barcodes in the
   EnVision export. Also runs on the command line: `python check_grid_num.py ROOT -o report.csv`.
+- **`PLATE_MAPS.md`**: full reference for `plate_maps.py`. It covers the workbook format, the `Source_plate` dispatch words, how lots are resolved, and troubleshooting.
 - **`safe_register.py`**: register plates and wells (including daughter plates). It connects to
   the test database `QB3_HiTS_nightly` unless you name `QB3_HiTS`, does a dry run (insert,
   report, roll back) unless you pass `save=True`, and saves plates and wells together, so a
@@ -73,6 +74,26 @@ The install name `smdc-data-proc` is not an import name. Imports are `import raw
 `safe_register`). Installing into another environment (for example a separate Notebooks venv)
 works the same way: activate it, then run `uv pip install -e <path to this repo>`. Rerun that after
 `pyproject.toml` changes, and restart the Jupyter kernel.
+
+`database_interactions/` and `data_viz/` are installed as packages, so from a notebook anywhere,
+including outside this repo:
+
+```python
+from database_interactions import plate_maps as pm
+from data_viz import plot_curves as pc
+```
+
+Older notebooks that use the flat names can keep them by importing `smdc_paths` first, which adds
+both folders to `sys.path`:
+
+```python
+import smdc_paths          # installed by pip install -e .; finds this checkout
+import plate_maps as pm
+import plot_curves as pc
+```
+
+No `sys.path.append('/Users/.../data-proc')` lines are needed any more. data-proc is retired,
+and everything it held now lives here.
 
 `raw_data_parsers.extract_rpt_data(infile, samples_only=False, outdir="./")`
 extracts Xevo sample metadata and writes spectra to `outdir/samples`.
