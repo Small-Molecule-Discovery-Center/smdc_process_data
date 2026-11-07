@@ -2124,6 +2124,7 @@ def make_dr_platemaps_and_folders(infile='', users=[("Amanda", "Paulson")], base
             _copy_file(origfile, outfile)
             if outfile not in raw_files:
                 raw_files.append(outfile)
+            _warn_if_not_envision_compliant(outfile)
             elapsed = time.time() - starttime
             logger.info(f'Done copying in {humanize.precisedelta(elapsed, minimum_unit="seconds", format="%d")}')
     # The toload_<i>/<date> folders this run wrote to, so later steps (the
@@ -2149,6 +2150,32 @@ def load_folders(info):
         raise ValueError("info has no record of its load folders. Pass the DataFrame that "
                          "make_dr_platemaps_and_folders returned, not a copy or a re-read Info sheet.")
     return list(folders)
+
+
+def _warn_if_not_envision_compliant(path):
+    """Log a warning naming the problem lines if a copied raw CSV looks hand-edited
+    in a way the Pipeline Pilot EnVision reader rejects (see
+    raw_data_parsers.check_envision_csv). Non-CSV files and files that are not
+    EnVision exports (no 'Plate information' section) are skipped."""
+    if not str(path).lower().endswith('.csv'):
+        return []
+    try:
+        with open(path, newline='') as f:
+            if 'Plate information' not in f.read(2000):
+                return []
+        try:
+            from raw_data_parsers import check_envision_csv
+        except ImportError:
+            return []
+        problems = check_envision_csv(path)
+    except Exception as e:
+        logger.warning(f"Could not check {path} for EnVision format problems: {e}")
+        return []
+    if problems:
+        logger.warning(f"{path} doesn't look like an untouched EnVision export. Pipeline Pilot will probably "
+                       f"reject it. Fix this copy by hand (blank, not 0, for missing wells):\n  "
+                       + '\n  '.join(problems))
+    return problems
 
 
 def raw_files(info):

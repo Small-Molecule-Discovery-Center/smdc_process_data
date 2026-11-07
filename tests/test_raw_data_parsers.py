@@ -166,3 +166,30 @@ def test_tidy_flags_reads_with_different_well_counts(tmp_path, monkeypatch):
     monkeypatch.setattr(raw_data_parsers, 'parse_envision_files', lambda **k: parsed)
     out = raw_data_parsers.tidy_envision_files([str(f)])
     assert out['wells per read'].tolist() == ['4/3'] and bool(out['reads differ'].iloc[0])
+
+
+def _envision_text(stray=False):
+    head = ',' + ','.join(f'{c:02d}' for c in range(1, 13))
+    lines = ['Plate information ,', 'Plate,Repeat,Barcode,Measurement date', '1,1,,6/11/2026', '',
+             'Background information', 'Plate,Label,Result', '1,x,0', '', 'Results for ch1', head]
+    lines += [','.join([r] + ['5'] * 12) for r in 'ABCDEFGH']
+    lines += ['', 'Plate information ,' + (',,,,9' if stray else ''), 'Plate,Repeat,Barcode,Measurement date',
+              '1,1,,6/11/2026', '', 'Basic assay information ,', 'Assay ID: ,,,,4310']
+    return '\n'.join(lines) + '\n'
+
+
+def test_check_envision_csv_finds_pasted_values(tmp_path, monkeypatch):
+    monkeypatch.setattr(raw_data_parsers, '_wells_per_read', lambda *a, **k: [96])
+    good, bad = tmp_path / 'good.csv', tmp_path / 'bad.csv'
+    good.write_text(_envision_text())
+    bad.write_text(_envision_text(stray=True))
+    assert raw_data_parsers.check_envision_csv(str(good)) == []
+    problems = raw_data_parsers.check_envision_csv(str(bad))
+    assert len(problems) == 1 and problems[0].startswith('line 20 (Plate information)')
+
+
+def test_check_envision_csv_flags_reads_with_different_wells(tmp_path, monkeypatch):
+    monkeypatch.setattr(raw_data_parsers, '_wells_per_read', lambda *a, **k: [253, 265, 253])
+    f = tmp_path / 'f.csv'
+    f.write_text(_envision_text())
+    assert 'different numbers of wells (253/265/253)' in raw_data_parsers.check_envision_csv(str(f))[0]
