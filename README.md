@@ -18,8 +18,9 @@ A set of functions to preprocess various kinds of raw data for upload or further
 
 #### database_interactions
 Notebooks and modules for querying HiTS, making plate maps and entering new data.
-Open notebooks from this folder (after `uv sync` or `python -m pip install -e .`, see below) so `import plate_maps`
-etc. work without any `sys.path` edits.
+After `uv sync` or `pip install -e .` (see below), import these from any folder with
+`from database_interactions import plate_maps, check_grid_num`. From inside this folder the flat
+`import plate_maps` also works.
 
 - **`prepare_hits_upload.ipynb`**: the operator notebook for a HiTS data upload. It follows
   Part C and E of the data upload SOP: build the `toload` folders, run the EnVision barcode /
@@ -67,8 +68,12 @@ optional pieces: `'.[upload]'` adds `rapidfuzz` for fuzzy barcode matching in th
 check, and `'.[tethering]'` adds Pillow for the tethering plots.
 This is the canonical source of the `smdc-data-proc` distribution, formerly
 installed from data-proc. Reinstall from here in each consuming environment.
-Imports remain `import raw_data_parsers`, `import mysql_cnx`, and
-`from process_data import tethering_analysis`.
+The install name `smdc-data-proc` is not an import name. Imports are `import raw_data_parsers`,
+`import mysql_cnx`, `from process_data import tethering_analysis` and
+`from database_interactions import plate_maps` (also `check_grid_num`, `inventory_registration`,
+`safe_register`). Installing into another environment (for example a separate Notebooks venv)
+works the same way: activate it, then run `uv pip install -e <path to this repo>`. Rerun that after
+`pyproject.toml` changes, and restart the Jupyter kernel.
 
 The scripts in `database_interactions/` and `data_viz/` (`plate_maps`, `check_grid_num`,
 `inventory_registration`, `safe_register`, `plot_curves`, ...) are plain modules, not a

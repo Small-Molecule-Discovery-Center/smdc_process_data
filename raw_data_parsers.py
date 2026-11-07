@@ -114,9 +114,13 @@ def _existing_dir(load_dir):
     path = str(load_dir)
     try:
         from plate_maps import resolve_share_path
-        path = resolve_share_path(path)
     except ImportError:
-        pass
+        try:
+            from database_interactions.plate_maps import resolve_share_path
+        except ImportError:
+            resolve_share_path = None
+    if resolve_share_path is not None:
+        path = resolve_share_path(path)
     if not os.path.isdir(path):
         raise FileNotFoundError(f"Folder not found: {load_dir!r}"
                                 + (f" (looked for {path!r})" if path != str(load_dir) else "")

@@ -752,8 +752,11 @@ def _resolve_share_path(path):
     still runs on its own without plate_maps' dependencies."""
     try:
         from plate_maps import resolve_share_path
-    except Exception:
-        return path
+    except ImportError:
+        try:
+            from database_interactions.plate_maps import resolve_share_path
+        except Exception:
+            return path
     try:
         return resolve_share_path(path)
     except FileNotFoundError:  # share not mounted: report the path as given

@@ -18,8 +18,15 @@ tethering = ["matplotlib", "seaborn", "Pillow", "humanize", "openpyxl", "scipy"]
 upload = ["humanize", "matplotlib", "seaborn", "openpyxl", "scipy", "rapidfuzz"]
 
 [tool.setuptools]
-packages = ["process_data"]
+# Import names (the distribution name smdc-data-proc is not one):
+#   from database_interactions import plate_maps, check_grid_num, inventory_registration, safe_register
+#   import raw_data_parsers, mysql_cnx, smdc_paths
+#   from process_data import tethering_analysis
+packages = ["process_data", "database_interactions"]
 py-modules = ["raw_data_parsers", "mysql_cnx", "smdc_paths"]
+
+[tool.setuptools.package-data]
+database_interactions = ["*.csv"]
 
 # Installed by `uv sync` (and `pip install --group dev`), not by `pip install .`
 [dependency-groups]

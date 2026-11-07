@@ -38,7 +38,10 @@ import pandas as pd
 from sqlalchemy import MetaData, Table, insert, select
 from sqlalchemy.engine import Connection, Engine
 
-import inventory_registration as ir
+try:
+    import inventory_registration as ir      # run from this folder (and in tests)
+except ImportError:
+    from database_interactions import inventory_registration as ir   # installed package
 from mysql_cnx import create_mysql_cnx
 
 TEST_DB = "QB3_HiTS_nightly"
