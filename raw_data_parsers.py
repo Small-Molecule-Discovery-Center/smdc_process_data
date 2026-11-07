@@ -29,6 +29,7 @@ def load_csv_files(load_dir="./toload"):
         dfs: List of dataframes containing the data from each CSV file
         filenames: List of filenames corresponding to each dataframe
     """
+    load_dir = _existing_dir(load_dir)
     filenames=[]
     dfs=[]
     for root, dirs, files in os.walk(load_dir):
@@ -100,6 +101,31 @@ def prepare_data_for_upload(df,ctrls='cols', neg_ctrl_locs=[1,2], pos_ctrl_locs=
 
 
 ####### ENVISION FILE PARSING FUNCTIONS #######
+
+
+def _existing_dir(load_dir):
+    """load_dir as a folder that exists, or a FileNotFoundError naming it.
+
+    os.walk on a missing folder yields nothing, so a wrong path used to look
+    like "0 files, nothing to fix". A Z:\\ or /Volumes/Shared/ path is mapped
+    to where the share is mounted here (plate_maps.resolve_share_path) when
+    plate_maps can be imported, so a path copied on Windows works in WSL.
+    """
+    path = str(load_dir)
+    try:
+        from plate_maps import resolve_share_path
+    except ImportError:
+        try:
+            from database_interactions.plate_maps import resolve_share_path
+        except ImportError:
+            resolve_share_path = None
+    if resolve_share_path is not None:
+        path = resolve_share_path(path)
+    if not os.path.isdir(path):
+        raise FileNotFoundError(f"Folder not found: {load_dir!r}"
+                                + (f" (looked for {path!r})" if path != str(load_dir) else "")
+                                + ". Check the path, and that the share is mounted.")
+    return path
 
 
 def parse_envision_files(plate_type='384', load_dir="./toload"):
@@ -186,6 +212,7 @@ def _envision_load_csv_files(load_dir="./toload", plate_type='384'):
         dfs: List of dataframes containing the data from each CSV file
         filenames: List of filenames corresponding to each dataframe
     """
+    load_dir = _existing_dir(load_dir)
     filenames=[]
     dfs=[]
     for root, dirs, files in os.walk(load_dir):
@@ -436,6 +463,7 @@ def ensure_calc_spacing_in_dir(load_dir: str, required_empty_lines: int = 3) -> 
     Returns:
         (files_seen, files_changed, total_inserted)
     """
+    load_dir = _existing_dir(load_dir)
     files_seen = 0
     files_changed = 0
     total_inserted = 0
@@ -453,8 +481,13 @@ def ensure_calc_spacing_in_dir(load_dir: str, required_empty_lines: int = 3) -> 
                 files_changed += 1
                 total_inserted += inserted
 
-    logger.info(
-        f"Processed {files_seen} CSV file(s) in '{load_dir}': changed {files_changed}, inserted {total_inserted} blank line(s)")
+    if files_seen == 0:
+        logger.warning(f"No CSV files found under '{load_dir}'. Is this the right folder?")
+    elif files_changed == 0:
+        logger.info(f"Found {files_seen} CSV file(s) in '{load_dir}': spacing already OK, nothing changed")
+    else:
+        logger.info(f"Found {files_seen} CSV file(s) in '{load_dir}': fixed spacing in {files_changed}, "
+                    f"inserted {total_inserted} blank line(s)")
     return files_seen, files_changed, total_inserted
 
 
@@ -646,6 +679,8 @@ def fill_zprime_blocks_in_dir(load_dir: str, require_prefix: bool = True) -> Tup
     Returns:
         (files_changed, blocks_filled_total)
     """
+    load_dir = _existing_dir(load_dir)
+    files_seen = 0
     files_changed = 0
     blocks_total = 0
     for root, dirs, files in os.walk(load_dir):
@@ -655,11 +690,18 @@ def fill_zprime_blocks_in_dir(load_dir: str, require_prefix: bool = True) -> Tup
             if file.startswith('._'):
                 continue
             csv_path = os.path.join(root, file)
+            files_seen += 1
             changed, blocks = fill_zprime_blocks_in_file(csv_path, require_prefix=require_prefix)
             if changed:
                 files_changed += 1
                 blocks_total += blocks
-    logger.info(f"Filled Z' blocks in {files_changed} file(s), total blocks: {blocks_total}")
+    if files_seen == 0:
+        logger.warning(f"No CSV files found under '{load_dir}'. Is this the right folder?")
+    elif files_changed == 0:
+        logger.info(f"Found {files_seen} CSV file(s) in '{load_dir}': no empty Z' blocks, nothing changed")
+    else:
+        logger.info(f"Found {files_seen} CSV file(s) in '{load_dir}': filled {blocks_total} empty Z' "
+                    f"block(s) in {files_changed} file(s)")
     return files_changed, blocks_total
 
 
@@ -822,3 +864,166 @@ def extract_rpt_data(infile, samples_only=False, outdir="./"):
         return df[['Sample', 'Plate', 'Well', 'Fname', 'intensitymax', 'massatmax',]]
     return df
 
+
+
+def trim_csv_columns_in_file(csv_path: str, ncols: int = 25) -> Tuple[bool, int]:
+    """Cut every row of a CSV to its first ncols fields, in place.
+
+    For EnVision exports where someone typed in columns past the plate
+    (row label + 24 columns = 25). Blank lines and quoting are kept, and the
+    file is only rewritten when a row was longer than ncols.
+
+    Returns:
+        (changed, rows_trimmed)
+    """
+    with open(csv_path, newline='') as f:
+        text = f.read()
+    newline = '\r\n' if '\r\n' in text else '\n'
+    rows = list(csv.reader(text.splitlines()))
+    trimmed = sum(len(r) > ncols for r in rows)
+    if not trimmed:
+        return (False, 0)
+    with open(csv_path, 'w', newline='') as f:
+        writer = csv.writer(f, lineterminator=newline)
+        for r in rows:
+            writer.writerow(r[:ncols])
+    logger.info(f"Trimmed {trimmed} row(s) of {csv_path} to {ncols} columns")
+    return (True, trimmed)
+
+
+def _wells_per_read(csv_path, plate_type='384'):
+    """Filled-well count of each read (measurement block) in one EnVision CSV."""
+    import tempfile, shutil
+    with tempfile.TemporaryDirectory() as tmp:
+        shutil.copy(csv_path, os.path.join(tmp, os.path.basename(csv_path)))
+        try:
+            parsed = parse_envision_files(plate_type=plate_type, load_dir=tmp)
+        except Exception as e:  # unreadable file: say so rather than stop the tidy
+            logger.warning(f"Could not parse {csv_path} to count wells per read: {e}")
+            return []
+    meas = [c for c in parsed.columns if c not in ('plate', 'row', 'col', 'well', 'Well')]
+    return [int(parsed[c].notna().sum()) for c in meas]
+
+
+def tidy_envision_files(paths, ncols: int = 25, required_empty_lines: int = 3) -> pd.DataFrame:
+    """Tidy the given EnVision CSVs in place: trim extra columns, put
+    required_empty_lines blank lines above each calculated-results block, and
+    fill empty Z' blocks.
+
+    Meant for the raw files make_dr_platemaps_and_folders copied into the
+    toload folders (plate_maps.raw_files(info)), so only the files that will
+    be uploaded are touched and the originals on the share are left alone.
+    Non-CSV paths (e.g. .rpt) are skipped.
+
+    Returns:
+        DataFrame with one row per CSV: rows trimmed, blank lines inserted and
+        Z' blocks filled (all 0 = the file was already tidy).
+    """
+    paths = [str(p) for p in ([paths] if isinstance(paths, (str, os.PathLike)) else paths)]
+    missing = [p for p in paths if not os.path.isfile(p)]
+    if missing:
+        raise FileNotFoundError(f"File(s) not found: {missing}")
+    csvs = [p for p in paths if p.lower().endswith('.csv') and not os.path.basename(p).startswith('._')]
+    skipped = len(paths) - len(csvs)
+    rows = []
+    for p in csvs:
+        _, trimmed = trim_csv_columns_in_file(p, ncols)
+        _, inserted = ensure_calc_spacing_in_file(p, required_empty_lines)
+        _, zblocks = fill_zprime_blocks_in_file(p)
+        counts = _wells_per_read(p)
+        problems = check_envision_csv(p)
+        rows.append({'file': p, 'rows trimmed': trimmed, 'blank lines inserted': inserted,
+                     "Z' blocks filled": zblocks, 'wells per read': '/'.join(map(str, counts)),
+                     'reads differ': len(set(counts)) > 1, 'problems': '; '.join(problems)})
+    cols = ['file', 'rows trimmed', 'blank lines inserted', "Z' blocks filled", 'wells per read', 'reads differ',
+            'problems']
+    out = pd.DataFrame(rows, columns=cols)
+    changed = int((out.iloc[:, 1:4].sum(axis=1) > 0).sum()) if len(out) else 0
+    for _, r in out[out['problems'] != ''].iterrows():
+        logger.warning(f"{r['file']} doesn't look like an untouched EnVision export, and tidying can't fix it: "
+                       f"{r['problems']}. Remove the stray values by hand (leave missing wells blank, not 0).")
+    note = f" (skipped {skipped} non-CSV file(s))" if skipped else ""
+    if not csvs:
+        logger.warning(f"No CSV files to tidy{note}.")
+    elif changed:
+        logger.info(f"Found {len(csvs)} CSV file(s){note}: tidied {changed}, {len(csvs) - changed} already tidy")
+    else:
+        logger.info(f"Found {len(csvs)} CSV file(s){note}: all already tidy, nothing changed")
+    return out
+
+
+_GRID_ROW = re.compile(r'^[A-Z]{1,2}$')
+
+
+def check_envision_csv(csv_path: str, plate_type: str = None, max_problems: int = 10) -> list:
+    """Check that an EnVision CSV still looks like an instrument export.
+
+    Catches the hand edits that make Pipeline Pilot's EnVision reader fail:
+    values pasted outside the plate grid or over the Plate information /
+    Background information lines, extra rows or columns in a plate grid, and
+    reads (measurement blocks) that cover different numbers of wells, which is
+    what makes Merge Plates fail with "Well property size mismatch". Only the
+    part before "Basic assay information" is checked; the protocol details
+    after it have no fixed layout. The plate format (96/384/1536) is read from
+    the first plate grid's column numbers unless plate_type is given.
+
+    Returns:
+        list[str]: problems, each naming the line. Empty = looks compliant.
+    """
+    with open(csv_path, newline='') as f:
+        lines = list(csv.reader(f))
+    problems = []
+    if plate_type is None:
+        widths = [sum(1 for v in r[1:] if str(v).strip()) for r in lines
+                  if r and not r[0].strip() and len(r) > 1 and str(r[1]).strip().lstrip('0') == '1']
+        by_cols = {v[2]: k for k, v in plate_dict.items()}
+        plate_type = next((by_cols[w] for w in widths if w in by_cols), '384')
+    ncols, nrows = plate_dict[str(plate_type)][2], plate_dict[str(plate_type)][1]
+
+    def filled(row, start=0):
+        return [i for i, v in enumerate(row) if i >= start and str(v).strip()]
+
+    section, width, grid_rows = None, 0, 0
+    for n, row in enumerate(lines, start=1):
+        first = row[0].strip() if row else ''
+        if first.startswith('Basic assay information'):
+            break
+        cells = filled(row)
+        if not cells:                                   # blank line ends a section
+            section = None
+            continue
+        if first.startswith(('Plate information', 'Background information')):
+            section, width = 'info_title', 0
+            extra = filled(row, 1)
+        elif first.startswith(('Calculated results', 'Results for')) or (first and section is None
+                                                                           and not _GRID_ROW.match(first)):
+            section = 'title'
+            extra = filled(row, 1)
+        elif section == 'info_title':                   # header row: its named columns are the limit
+            width = next((i for i, v in enumerate(row) if not str(v).strip()), len(row))
+            section = 'info'
+            extra = filled(row, width)
+        elif section == 'info':
+            extra = filled(row, width)
+        elif first == '' and [str(row[i]).strip().lstrip('0') for i in cells] == [str(k) for k in range(1, len(cells) + 1)]:
+            section, grid_rows = 'grid', 0              # column-number header of a plate grid
+            extra = filled(row, ncols + 1)
+        elif section == 'grid' and _GRID_ROW.match(first):
+            grid_rows += 1
+            extra = filled(row, ncols + 1)
+            if grid_rows > nrows:
+                problems.append(f"line {n}: plate grid has more than {nrows} rows")
+        else:
+            extra = cells                               # values where no data belongs
+        if extra:
+            cols = ', '.join(str(i + 1) for i in extra[:6]) + (' ...' if len(extra) > 6 else '')
+            problems.append(f"line {n} ({first[:30] or 'blank first cell'}): unexpected values in column(s) {cols}")
+        if len(problems) >= max_problems:
+            problems.append('... more problems not listed')
+            return problems
+
+    counts = _wells_per_read(csv_path, plate_type)
+    if len(set(counts)) > 1:
+        problems.append(f"reads have data in different numbers of wells ({'/'.join(map(str, counts))}); "
+                        "Pipeline Pilot's Merge Plates fails on this ('Well property size mismatch')")
+    return problems

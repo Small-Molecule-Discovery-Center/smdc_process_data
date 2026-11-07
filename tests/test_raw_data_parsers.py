@@ -1,3 +1,4 @@
+import pytest
 """Regression checks for the reusable EnVision reader helpers."""
 
 import unittest
@@ -117,3 +118,78 @@ class EnvisionDataParsingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_tidy_steps_refuse_a_missing_folder(tmp_path):
+    missing = str(tmp_path / 'nope')
+    for fn in (raw_data_parsers.ensure_calc_spacing_in_dir, raw_data_parsers.fill_zprime_blocks_in_dir,
+               raw_data_parsers._envision_load_csv_files):
+        with pytest.raises(FileNotFoundError, match='Folder not found'):
+            fn(missing)
+
+
+def test_tidy_steps_say_how_many_files_they_found(tmp_path, caplog):
+    (tmp_path / 'a.csv').write_text('x,y\n1,2\n')
+    (tmp_path / 'b.csv').write_text('x,y\n1,2\n')
+    with caplog.at_level('INFO', logger='raw_data_parsers'):
+        assert raw_data_parsers.ensure_calc_spacing_in_dir(str(tmp_path)) == (2, 0, 0)
+        assert raw_data_parsers.fill_zprime_blocks_in_dir(str(tmp_path)) == (0, 0)
+    assert 'Found 2 CSV file(s)' in caplog.text and 'nothing changed' in caplog.text
+
+
+def test_tidy_envision_files_touches_only_the_files_given(tmp_path):
+    wide = tmp_path / 'toload.csv'
+    wide.write_text('\n'.join([','.join(['A'] + ['1'] * 26), '', ','.join(['B'] + ['2'] * 24)]) + '\n')
+    other = tmp_path / 'not_listed.csv'
+    other.write_text(','.join(['A'] + ['1'] * 26) + '\n')
+    rpt = tmp_path / 'run.rpt'
+    rpt.write_text('x')
+    out = raw_data_parsers.tidy_envision_files([str(wide), str(rpt)])
+    assert out['file'].tolist() == [str(wide)] and out['rows trimmed'].tolist() == [1]
+    lines = wide.read_text().split('\n')
+    assert len(lines[0].split(',')) == 25 and lines[1] == ''      # trimmed, blank line kept
+    assert len(other.read_text().split(',')) == 27                # not listed: untouched
+    again = raw_data_parsers.tidy_envision_files(str(wide))
+    assert again.iloc[0, 1:4].sum() == 0                          # already tidy
+
+
+def test_tidy_envision_files_names_missing_files(tmp_path):
+    with pytest.raises(FileNotFoundError, match='nope.csv'):
+        raw_data_parsers.tidy_envision_files([str(tmp_path / 'nope.csv')])
+
+
+def test_tidy_flags_reads_with_different_well_counts(tmp_path, monkeypatch):
+    f = tmp_path / 'run_4310.csv'
+    f.write_text('x\n')
+    parsed = pd.DataFrame({'plate': ['p'] * 4, 'row': list('ABCD'), 'col': [1] * 4,
+                           'ch1': [1, 1, 1, 9], 'ch2': [1, 1, 1, None], 'well': ['A01', 'B01', 'C01', 'D01']})
+    monkeypatch.setattr(raw_data_parsers, 'parse_envision_files', lambda **k: parsed)
+    out = raw_data_parsers.tidy_envision_files([str(f)])
+    assert out['wells per read'].tolist() == ['4/3'] and bool(out['reads differ'].iloc[0])
+
+
+def _envision_text(stray=False):
+    head = ',' + ','.join(f'{c:02d}' for c in range(1, 13))
+    lines = ['Plate information ,', 'Plate,Repeat,Barcode,Measurement date', '1,1,,6/11/2026', '',
+             'Background information', 'Plate,Label,Result', '1,x,0', '', 'Results for ch1', head]
+    lines += [','.join([r] + ['5'] * 12) for r in 'ABCDEFGH']
+    lines += ['', 'Plate information ,' + (',,,,9' if stray else ''), 'Plate,Repeat,Barcode,Measurement date',
+              '1,1,,6/11/2026', '', 'Basic assay information ,', 'Assay ID: ,,,,4310']
+    return '\n'.join(lines) + '\n'
+
+
+def test_check_envision_csv_finds_pasted_values(tmp_path, monkeypatch):
+    monkeypatch.setattr(raw_data_parsers, '_wells_per_read', lambda *a, **k: [96])
+    good, bad = tmp_path / 'good.csv', tmp_path / 'bad.csv'
+    good.write_text(_envision_text())
+    bad.write_text(_envision_text(stray=True))
+    assert raw_data_parsers.check_envision_csv(str(good)) == []
+    problems = raw_data_parsers.check_envision_csv(str(bad))
+    assert len(problems) == 1 and problems[0].startswith('line 20 (Plate information)')
+
+
+def test_check_envision_csv_flags_reads_with_different_wells(tmp_path, monkeypatch):
+    monkeypatch.setattr(raw_data_parsers, '_wells_per_read', lambda *a, **k: [253, 265, 253])
+    f = tmp_path / 'f.csv'
+    f.write_text(_envision_text())
+    assert 'different numbers of wells (253/265/253)' in raw_data_parsers.check_envision_csv(str(f))[0]

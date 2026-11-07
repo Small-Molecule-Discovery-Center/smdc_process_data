@@ -25,7 +25,7 @@ class MySQLConfigurationTests(unittest.TestCase):
 
 class XevoTests(unittest.TestCase):
     def test_real_report_and_sample_archive(self):
-        report = Path(__file__).parent / "data/masslynx_example_input.rpt"
+        report = Path(__file__).resolve().parent.parent / "data/masslynx_example_input.rpt"
         with tempfile.TemporaryDirectory() as d:
             normal = raw_data_parsers.extract_rpt_data(str(report), outdir=d)
             self.assertEqual(len(normal), 28)

@@ -2,7 +2,7 @@
 
 DB-touching helpers (fetch_plates, fetch_mother_wells, assert_*) are exercised
 manually in the demo notebook; these tests cover the reshape/copy/build logic
-that needs no database.  Run with:  pytest database_interactions/
+that needs no database.  Run with:  pytest
 """
 
 from pathlib import Path
@@ -13,7 +13,7 @@ import pytest
 
 import inventory_registration as ir
 
-MAP_DIR = Path(__file__).resolve().parent
+MAP_DIR = Path(__file__).resolve().parent.parent / "database_interactions"
 
 
 def _mother_wells(parents, size, *, plate_col="IP_GRID_NUM"):

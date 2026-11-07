@@ -7,11 +7,27 @@ name = "smdc-data-proc"
 version = "0.1.0.dev1"
 description = "SMDC laboratory data processing utilities"
 requires-python = ">=3.9"
-dependencies = ["numpy", "pandas", "SQLAlchemy", "PyMySQL"]
+# humanize, matplotlib and seaborn are imported at the top of plate_maps.py,
+# openpyxl reads the plate-map workbooks and scipy is needed by plot_curves,
+# so a plain `uv sync` or `pip install -e .` covers the upload notebooks.
+dependencies = ["numpy", "pandas", "SQLAlchemy", "PyMySQL", "humanize", "matplotlib", "seaborn", "openpyxl", "scipy"]
 
 [project.optional-dependencies]
 tethering = ["matplotlib", "seaborn", "Pillow"]
+# database_interactions: plate_maps, check_grid_num and prepare_hits_upload.ipynb
+upload = ["humanize", "matplotlib", "seaborn", "openpyxl", "scipy", "rapidfuzz"]
 
 [tool.setuptools]
-packages = ["process_data"]
+# Import names (the distribution name smdc-data-proc is not one):
+#   from database_interactions import plate_maps, check_grid_num, inventory_registration, safe_register
+#   import raw_data_parsers, mysql_cnx
+#   from process_data import tethering_analysis
+packages = ["process_data", "database_interactions"]
 py-modules = ["raw_data_parsers", "mysql_cnx"]
+
+[tool.setuptools.package-data]
+database_interactions = ["*.csv"]
+
+# Installed by `uv sync` (and `pip install --group dev`), not by `pip install .`
+[dependency-groups]
+dev = ["jupyterlab"]
