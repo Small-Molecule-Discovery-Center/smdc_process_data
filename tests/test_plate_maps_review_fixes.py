@@ -520,3 +520,9 @@ def test_zero_conc_control_wells_are_kept():
     out = pm.handle_zero_concentrations(dids)
     assert out['Destination well'].tolist() == ['A01', 'J01', 'K01']   # only the truly empty well goes
     assert out['[compound] uM'].isna().tolist() == [False, True, True]  # controls have no conc
+
+
+def test_concentrations_that_print_the_same_become_equal():
+    dids = pd.DataFrame({'[compound] uM': [83.33333333333333, 83.3333333333333, 250.0, np.nan, 0.03810394]})
+    out = pm._round_concentrations(dids)['[compound] uM']
+    assert out[0] == out[1] and out[2] == 250.0 and np.isnan(out[3]) and out[4] == 0.03810394

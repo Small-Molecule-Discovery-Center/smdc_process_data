@@ -1508,6 +1508,7 @@ def make_dr_platemaps(dp, row, users, basedir=None, replace_dict=None, control_d
     # count above means the count sees the full plate, so the warning stays
     # meaningful instead of firing on every plate with empty wells.
     dids = handle_zero_concentrations(dids)
+    dids = _round_concentrations(dids)
 
     # HiTS wants the literal string 'NA' for empty fields, not blanks or NaN.
     dids = dids.fillna('NA').replace("-", "NA").replace('water', 'NA').replace('Water', 'NA')
@@ -1946,6 +1947,30 @@ def get_destination_plate_info(dp, row, replace_dict, control_dict=None):
     logger.info("Read SMDC ID's")
 
     return _standardize_dids_columns(dids), maps
+
+
+CONC_SIG_FIGS = 10
+
+
+def _round_concentrations(dids, sig_figs=CONC_SIG_FIGS):
+    """Round '[compound] uM' to sig_figs significant figures.
+
+    The same dilution often reaches the map in two forms: a formula result
+    (83.33333333333333) in some cells and a typed or pasted value
+    (83.3333333333333) in others. They print the same but are different
+    numbers, so Pipeline Pilot's 'Insert Conc Variable' sees two values for
+    one concentration and fails with "Cannot insert multiple values for
+    HLD_VALUE". Ten significant figures is far beyond any real dilution.
+    """
+    col = '[compound] uM'
+    if col not in dids.columns:
+        return dids
+    conc = pd.to_numeric(dids[col], errors='coerce')
+    ok = conc.notna() & np.isfinite(conc) & (conc != 0)
+    if ok.any():
+        dids = dids.copy()
+        dids.loc[ok, col] = conc[ok].map(lambda v: float(f'{v:.{sig_figs}g}'))
+    return dids
 
 
 def handle_zero_concentrations(dids):
