@@ -891,6 +891,20 @@ def trim_csv_columns_in_file(csv_path: str, ncols: int = 25) -> Tuple[bool, int]
     return (True, trimmed)
 
 
+def _wells_per_read(csv_path, plate_type='384'):
+    """Filled-well count of each read (measurement block) in one EnVision CSV."""
+    import tempfile, shutil
+    with tempfile.TemporaryDirectory() as tmp:
+        shutil.copy(csv_path, os.path.join(tmp, os.path.basename(csv_path)))
+        try:
+            parsed = parse_envision_files(plate_type=plate_type, load_dir=tmp)
+        except Exception as e:  # unreadable file: say so rather than stop the tidy
+            logger.warning(f"Could not parse {csv_path} to count wells per read: {e}")
+            return []
+    meas = [c for c in parsed.columns if c not in ('plate', 'row', 'col', 'well', 'Well')]
+    return [int(parsed[c].notna().sum()) for c in meas]
+
+
 def tidy_envision_files(paths, ncols: int = 25, required_empty_lines: int = 3) -> pd.DataFrame:
     """Tidy the given EnVision CSVs in place: trim extra columns, put
     required_empty_lines blank lines above each calculated-results block, and
@@ -916,10 +930,17 @@ def tidy_envision_files(paths, ncols: int = 25, required_empty_lines: int = 3) -
         _, trimmed = trim_csv_columns_in_file(p, ncols)
         _, inserted = ensure_calc_spacing_in_file(p, required_empty_lines)
         _, zblocks = fill_zprime_blocks_in_file(p)
+        counts = _wells_per_read(p)
         rows.append({'file': p, 'rows trimmed': trimmed, 'blank lines inserted': inserted,
-                     "Z' blocks filled": zblocks})
-    out = pd.DataFrame(rows, columns=['file', 'rows trimmed', 'blank lines inserted', "Z' blocks filled"])
-    changed = int((out.iloc[:, 1:].sum(axis=1) > 0).sum()) if len(out) else 0
+                     "Z' blocks filled": zblocks, 'wells per read': '/'.join(map(str, counts)),
+                     'reads differ': len(set(counts)) > 1})
+    cols = ['file', 'rows trimmed', 'blank lines inserted', "Z' blocks filled", 'wells per read', 'reads differ']
+    out = pd.DataFrame(rows, columns=cols)
+    changed = int((out.iloc[:, 1:4].sum(axis=1) > 0).sum()) if len(out) else 0
+    for _, r in out[out['reads differ'].astype(bool)].iterrows():
+        logger.warning(f"{r['file']}: the reads have data in different numbers of wells ({r['wells per read']}). "
+                       "Pipeline Pilot's Merge Plates fails on this ('Well property size mismatch'). Look for "
+                       "values pasted outside the plate grid or a read that covers different wells, and fix the file.")
     note = f" (skipped {skipped} non-CSV file(s))" if skipped else ""
     if not csvs:
         logger.warning(f"No CSV files to tidy{note}.")

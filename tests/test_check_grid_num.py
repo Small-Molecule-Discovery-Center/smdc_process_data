@@ -70,7 +70,8 @@ def test_only_listed_folders_are_checked(tmp_path):
     assert cg.check_upload_folder(str(tmp_path)).verdict.tolist() == ['ORDER_MISMATCH']
     new = str(tmp_path / '1_test' / 'toload_0' / '20260101')
     assert cg.check_upload_folder([new]).empty
-    assert (tmp_path / '1_test' / 'toload_0' / '20260101' / 'folder_summary.csv').exists()
+    assert (tmp_path / '1_test' / 'folder_summary.csv').exists()          # assay folder, not inside toload
+    assert not (tmp_path / '1_test' / 'toload_0' / '20260101' / 'folder_summary.csv').exists()
 
 
 def test_reports_go_to_the_common_folder(tmp_path):
@@ -81,4 +82,4 @@ def test_reports_go_to_the_common_folder(tmp_path):
         (d / 'export.csv').write_text('Plate information\nPlate,Barcode\n1,P1\n\nPlate information\nPlate,Barcode\n2,P2\n\n')
     folders = [str(tmp_path / '1_test' / 'toload_0' / d) for d in ['20260101', '20260102']]
     assert cg.check_upload_folder(folders).empty
-    assert (tmp_path / '1_test' / 'toload_0' / 'folder_summary.csv').exists()
+    assert (tmp_path / '1_test' / 'folder_summary.csv').exists()
