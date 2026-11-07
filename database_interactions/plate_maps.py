@@ -116,14 +116,31 @@ from mysql_cnx import create_mysql_cnx
 # test database, which is right for writes but stale for plate lookups).
 READ_DB = os.environ.get('hits_db') or 'QB3_HiTS'
 
+def _is_wsl():
+    """True inside Windows Subsystem for Linux."""
+    if os.environ.get('WSL_DISTRO_NAME'):
+        return True
+    try:
+        with open('/proc/version') as f:
+            return 'microsoft' in f.read().lower()
+    except OSError:
+        return False
+
+
+SHARE_ROOT_HELP = ("Set SHARE_ROOT in the notebook's settings cell (or pass share_root=, or set the "
+                   "smdc_share_root environment variable) to the folder where the Montreal share is "
+                   "mounted, e.g. '/mnt/z/' in WSL, '/Volumes/Shared/' on a Mac, 'Z:/' on Windows.")
+
+
 def default_share_root():
     """Where the Montreal share (raw instrument data) is mounted on this machine.
 
     Order: the `smdc_share_root` environment variable if set; else the first
     of the standard mounts that exists: `/Volumes/Shared/` (macOS) or
     `/mnt/z/` (WSL, i.e. Windows drive Z:); else `Z:/` on native Windows.
-    Pass `share_root=` to make_dr_platemaps_and_folders / clean_up_folders to
-    use a different drive.
+    The expected setup is WSL on Windows with Z: mounted at /mnt/z. Anywhere
+    else, or when /mnt/z isn't mounted, this raises and asks for the mount
+    point instead of guessing. Pass `share_root=` to use a different drive.
     """
     env = os.environ.get('smdc_share_root')
     if env:
@@ -133,9 +150,13 @@ def default_share_root():
             return candidate
     if os.name == 'nt':
         return 'Z:/'
-    raise FileNotFoundError(
-        "Can't find the Montreal share. Mount it (macOS: /Volumes/Shared, Windows/WSL: Z: = /mnt/z) "
-        "or pass share_root='<mount point>' (or set the smdc_share_root environment variable).")
+    if _is_wsl():
+        raise FileNotFoundError(
+            "This is WSL, but the Montreal share is not mounted at /mnt/z. Mount it with "
+            "`sudo mkdir -p /mnt/z && sudo mount -t drvfs Z: /mnt/z -o uid=$(id -u),gid=$(id -g)` "
+            "(see the WSL setup doc for the /etc/fstab line), or, if it is mounted somewhere else: "
+            + SHARE_ROOT_HELP)
+    raise FileNotFoundError("Can't find the Montreal share. " + SHARE_ROOT_HELP)
 
 
 def _connect():
@@ -1159,6 +1180,26 @@ def resolve_share_path(path, share_root=None):
     return os.path.join(share_root or default_share_root(), _normalize_share_path(p))
 
 
+def share_path(path, share_root=None, what='path'):
+    """resolve_share_path, then check the result exists.
+
+    For notebook settings: a wrong path or an unmounted share fails here,
+    with both the typed and the mapped path, instead of several cells later.
+    Args:
+        path (str): a path as typed or copied (Z:\\..., /Volumes/Shared/..., /mnt/z/...).
+        share_root (str, optional): where the share is mounted. Default: default_share_root().
+        what (str): the setting's name, for the message (e.g. 'INFILE').
+    Returns:
+        str: the path on this machine.
+    """
+    resolved = resolve_share_path(path, share_root)
+    if not os.path.exists(resolved):
+        mapped = f" (looked for {resolved!r})" if resolved != str(path) else ""
+        raise FileNotFoundError(f"{what} not found: {str(path)!r}{mapped}. Check the path for typos. "
+                                f"If the share is mounted somewhere else: {SHARE_ROOT_HELP}")
+    return resolved
+
+
 
 def _copy_file(src, dst):
     """Copy a file's contents, then its timestamps if the filesystem allows it.
@@ -2060,6 +2101,10 @@ def make_dr_platemaps_and_folders(infile='', users=[("Amanda", "Paulson")], base
             # _copy_file rather than os.system("cp ..."): no shell quoting to
             # get wrong, and a failed copy raises instead of scrolling past.
             # It keeps mtime where the mount allows, which matters for provenance.
+            if not os.path.exists(origfile):
+                raise FileNotFoundError(
+                    f"Raw_data_file for {row.Grid_num} not found: {origfile!r}. Check the Info tab's "
+                    f"Raw_data_file path. If the share is mounted somewhere else: {SHARE_ROOT_HELP}")
             _copy_file(origfile, outfile)
             elapsed = time.time() - starttime
             logger.info(f'Done copying in {humanize.precisedelta(elapsed, minimum_unit="seconds", format="%d")}')
