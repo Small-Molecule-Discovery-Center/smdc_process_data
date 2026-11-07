@@ -2001,6 +2001,7 @@ def make_dr_platemaps_and_folders(infile='', users=[("Amanda", "Paulson")], base
     if dose_response:
         _check_source_plates(info)  # fail now, not after folders are made and files copied
     load_folders = []
+    dr_plates = []  # (grid_num, path) of every *_DR_plate.xlsx written, for check_dr_plates
 
     # One instrument file may back several plates, so group by file.
     for df, rpt in _iter_load_groups(info):
@@ -2033,7 +2034,9 @@ def make_dr_platemaps_and_folders(infile='', users=[("Amanda", "Paulson")], base
                     # Apply scientist-control flags LAST, after all plate/lot/source logic.
                     dids = _apply_control_flags_from_map(dids, dp, plate_row, control_dict)
 
-                    dids.to_excel(os.path.join(outdir, f'{grid_num}_DR_plate.xlsx'), index=False)
+                    dr_path = os.path.join(outdir, f'{grid_num}_DR_plate.xlsx')
+                    dids.to_excel(dr_path, index=False)
+                    dr_plates.append((grid_num, dr_path))
                 row.Grid_num = ';'.join(gridnum.grid_num)
 
             # create or modify grid_num.txt: the manifest the HiTS loader reads
@@ -2063,6 +2066,8 @@ def make_dr_platemaps_and_folders(infile='', users=[("Amanda", "Paulson")], base
     # The toload_<i>/<date> folders this run wrote to, so later steps (the
     # EnVision check) look only at them and not at older assays in basedir.
     info.attrs['load_folders'] = load_folders
+    info.attrs['dr_plates'] = dr_plates
+    info.attrs['infile'] = infile
     return info
 
 
@@ -2080,6 +2085,80 @@ def load_folders(info):
         raise ValueError("info has no record of its load folders. Pass the DataFrame that "
                          "make_dr_platemaps_and_folders returned, not a copy or a re-read Info sheet.")
     return list(folders)
+
+
+_ID_CELL = re.compile(r'^\s*(\d+)(?:\.0+)?(?:\s*-\s*\d+)?\s*$')
+
+
+def _expected_smdc_id(cell):
+    """The SMDC ID a block-0 cell asks for: 12346, 12346.0 and 12346-1 all give
+    12346. Anything else (blank, a control or solvent label) gives NaN."""
+    m = _ID_CELL.match(str(cell)) if pd.notna(cell) else None
+    return float(m.group(1)) if m else np.nan
+
+
+def check_dr_plates(info, draw=True):
+    """Check each *_DR_plate.xlsx step 2 wrote against the user's input map.
+
+    For every destination plate, the SMDC ID in each well of the DR file is
+    compared with block 0 of that plate's tab in the input workbook. Numbers
+    and ID-lot cells like 12346-1 are compounds; text cells (controls, DMSO,
+    anything in REPLACE_DICT) are expected to be empty in the DR file.
+
+    Args:
+        info (DataFrame): what make_dr_platemaps_and_folders returned.
+        draw (bool): also draw each DR file as a plate heatmap of SMDC IDs and
+            one of concentrations, to compare by eye with the input tab.
+    Returns:
+        (summary, mismatches): summary has one row per plate (compound wells
+        in the input, compound wells in the DR file, mismatched wells, wells
+        with no Lot, no source plate or no concentration). mismatches lists
+        every well where the two disagree. Both empty of problems = file matches.
+    """
+    dr_plates = info.attrs.get('dr_plates')
+    infile = info.attrs.get('infile')
+    if dr_plates is None or infile is None:
+        raise ValueError("info has no record of its DR plate files. Pass the DataFrame that "
+                         "make_dr_platemaps_and_folders returned (with dose_response=True).")
+    dp, _ = _read_info_sheet(infile)
+    rows, bad = [], []
+    for grid_num, path in dr_plates:
+        dr = pd.read_excel(path)
+        want = read_platemap_block(plate_map=dp[grid_num[0:31]], block=0, value_name='Input')
+        want['Destination well'] = want.row + want.col
+        want['Expected'] = want.Input.map(_expected_smdc_id)
+        got = dr.groupby('Destination well', as_index=False).SMDC_ID.first()
+        both = want[['Destination well', 'Input', 'Expected']].merge(got, how='outer')
+        differs = ~((both.Expected == both.SMDC_ID) | (both.Expected.isna() & both.SMDC_ID.isna()))
+        mism = both[differs].assign(**{'Destination plate': grid_num})
+        bad.append(mism[['Destination plate', 'Destination well', 'Input', 'Expected', 'SMDC_ID']])
+        compounds = dr[dr.SMDC_ID.notna()]
+        rows.append({
+            'Destination plate': grid_num,
+            'compound wells (input)': int(both.Expected.notna().sum()),
+            'compound wells (DR file)': int(compounds['Destination well'].nunique()),
+            'mismatched wells': int(differs.sum()),
+            'no Lot': int(compounds.Lot.isna().sum()) if 'Lot' in dr else len(compounds),
+            'no source plate': (int(compounds['Source plate'].isna().sum())
+                                if 'Source plate' in dr else len(compounds)),
+            'no conc': (int(compounds['[compound] uM'].isna().sum())
+                        if '[compound] uM' in dr else len(compounds)),
+            'file': path,
+        })
+        if draw:
+            draw_plate_heatmap(barcode=grid_num, df=dr, wells='Destination well', values='SMDC_ID',
+                               labels='SMDC_ID', plate_size=384)
+            if '[compound] uM' in dr and dr['[compound] uM'].notna().any():
+                draw_plate_heatmap(barcode=grid_num, df=dr, wells='Destination well',
+                                   values='[compound] uM', labels='[compound] uM', plate_size=384)
+    summary = pd.DataFrame(rows)
+    mismatches = pd.concat(bad, ignore_index=True) if bad else pd.DataFrame()
+    n = int(summary['mismatched wells'].sum()) if len(summary) else 0
+    if n:
+        logger.warning(f"{n} well(s) in the DR plate files don't match the input map. See mismatches.")
+    else:
+        logger.info(f"All {len(summary)} DR plate file(s) match the input map.")
+    return summary, mismatches
 
 
 # ###############################################################################

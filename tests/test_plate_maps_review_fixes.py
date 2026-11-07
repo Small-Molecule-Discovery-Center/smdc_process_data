@@ -457,3 +457,35 @@ def test_unknown_source_plate_barcode_says_so(monkeypatch):
     monkeypatch.setattr(pm.pd, 'read_sql', lambda *a, **k: empty.copy())
     with pytest.raises(ValueError, match="'NOPE-MA01' has no wells in HiTS"):
         pm.make_platemaps_from_barcode('NOPE-MA01', outdir=None, cnx=object())
+
+
+def test_check_dr_plates_finds_wells_that_differ_from_the_input(tmp_path, monkeypatch):
+    def ids(r, c):
+        if c == 1:
+            return 'DMSO'
+        if (r, c) == ('A', 2):
+            return '12346-1'
+        return 100 + c if r == 'A' else None
+    sheet = _sheet([ids])
+    dr = pd.DataFrame({'Destination well': [f'A{c:02d}' for c in range(2, 25)],
+                       'SMDC_ID': [12346.0] + [100.0 + c for c in range(3, 25)],
+                       'Lot': [1.0] * 23, 'Source plate': ['S1'] * 23, '[compound] uM': [10.0] * 23})
+    dr.loc[dr['Destination well'] == 'A05', 'SMDC_ID'] = 999.0     # wrong compound
+    dr = pd.concat([dr, pd.DataFrame({'Destination well': ['B01'], 'SMDC_ID': [5.0], 'Lot': [np.nan],
+                                      'Source plate': ['S1'], '[compound] uM': [10.0]})])  # stray well
+    path = tmp_path / 'P1_DR_plate.xlsx'
+    dr.to_excel(path, index=False)
+    monkeypatch.setattr(pm, '_read_info_sheet', lambda infile: ({'P1': sheet}, None))
+    info = pd.DataFrame({'Grid_num': ['P1']})
+    info.attrs.update(dr_plates=[('P1', str(path))], infile='in.xlsx')
+
+    summary, mism = pm.check_dr_plates(info, draw=True)   # draws too (Agg backend in tests)
+    assert sorted(mism['Destination well']) == ['A05', 'B01']
+    row = summary.iloc[0]
+    assert (row['compound wells (input)'], row['compound wells (DR file)']) == (23, 24)
+    assert (row['mismatched wells'], row['no Lot']) == (2, 1)
+
+
+def test_check_dr_plates_needs_the_info_step_2_returned():
+    with pytest.raises(ValueError, match='DR plate files'):
+        pm.check_dr_plates(pd.DataFrame({'Grid_num': ['P1']}))
