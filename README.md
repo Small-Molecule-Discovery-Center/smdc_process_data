@@ -75,9 +75,16 @@ The install name `smdc-data-proc` is not an import name. Imports are `import raw
 works the same way: activate it, then run `uv pip install -e <path to this repo>`. Rerun that after
 `pyproject.toml` changes, and restart the Jupyter kernel.
 
-The scripts in `database_interactions/` and `data_viz/` (`plate_maps`, `check_grid_num`,
-`inventory_registration`, `safe_register`, `plot_curves`, ...) are plain modules, not a
-package. From a notebook anywhere, including outside this repo, add one line first:
+`database_interactions/` and `data_viz/` are installed as packages, so from a notebook anywhere,
+including outside this repo:
+
+```python
+from database_interactions import plate_maps as pm
+from data_viz import plot_curves as pc
+```
+
+Older notebooks that use the flat names can keep them by importing `smdc_paths` first, which adds
+both folders to `sys.path`:
 
 ```python
 import smdc_paths          # installed by pip install -e .; finds this checkout

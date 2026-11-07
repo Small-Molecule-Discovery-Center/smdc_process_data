@@ -20,9 +20,10 @@ upload = ["humanize", "matplotlib", "seaborn", "openpyxl", "scipy", "rapidfuzz"]
 [tool.setuptools]
 # Import names (the distribution name smdc-data-proc is not one):
 #   from database_interactions import plate_maps, check_grid_num, inventory_registration, safe_register
+#   from data_viz import plot_curves
 #   import raw_data_parsers, mysql_cnx, smdc_paths
 #   from process_data import tethering_analysis
-packages = ["process_data", "database_interactions"]
+packages = ["process_data", "database_interactions", "data_viz"]
 py-modules = ["raw_data_parsers", "mysql_cnx", "smdc_paths"]
 
 [tool.setuptools.package-data]
