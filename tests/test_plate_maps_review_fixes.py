@@ -413,6 +413,7 @@ def test_folder_pipeline_stops_before_writing_when_source_plate_is_blank(tmp_pat
 @pytest.mark.parametrize('value,mode', [
     ('', 'blank'), (np.nan, 'blank'),
     ('NA', 'na'), ('n/a', 'na'), ('N.A.', 'na'), ('none', 'na'), ('n.a. (by hand)', 'na'),
+    ('use my name', 'na'), ('Use My Name', 'na'), ('use users', 'na'),
     ('use lots', 'lot'), ('Lots', 'lot'), ('use map', 'map'), ('MAP', 'map'),
     ('use biomek / use echo', 'biomek'),
     ('SMDC-MAP-384-01-Eco1', 'barcodes'), ('PLOT12-MA01; X-MA01', 'barcodes'), ('NA-0042', 'barcodes'),
@@ -446,5 +447,13 @@ def test_source_plate_barcodes_skips_keywords_but_keeps_map_barcodes():
 
 
 def test_source_plate_help_lists_exact_options_in_quotes():
-    for option in ('"use lots"', '"use map"', '"use biomek"', '"NA"', '"n/a"', '"n.a."', '"none"', '";"'):
+    for option in ('"use lots"', '"use map"', '"use biomek"', '"NA"', '"n/a"', '"n.a."', '"none"', '"use my name"', '";"'):
         assert option in pm.SOURCE_PLATE_HELP
+
+
+def test_unknown_source_plate_barcode_says_so(monkeypatch):
+    empty = pd.DataFrame(columns=['IW_COORDINATES', 'Vendor_Alias', 'SMDC_ID', 'Common_Name',
+                                  'Alias_Type', 'Lot_Num', 'Conc_uM', 'Conc_nM', 'SMILES'])
+    monkeypatch.setattr(pm.pd, 'read_sql', lambda *a, **k: empty.copy())
+    with pytest.raises(ValueError, match="'NOPE-MA01' has no wells in HiTS"):
+        pm.make_platemaps_from_barcode('NOPE-MA01', outdir=None, cnx=object())

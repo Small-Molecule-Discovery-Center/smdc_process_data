@@ -452,6 +452,9 @@ def make_platemaps_from_barcode(barcode='OTPARP1234-Eco1', outdir='./', cnx=None
     df = pd.read_sql(query, cnx, params={'barcode': barcode})
     if close:
         cnx.dispose()
+    if df.empty:
+        raise ValueError(f"Source plate {barcode!r} has no wells in HiTS. Check the barcode in the "
+                         f"Info tab's Source_plate column. {SOURCE_PLATE_HELP}")
 
     # The INV_ALIAS join fans each well out to one row per alias type. Collapse
     # back to one row per well: prefer the Common_Name alias, else keep an
@@ -1251,12 +1254,14 @@ SOURCE_PLATE_HELP = (
     '  "use lots"   lots are drawn in block 2 (bare "lots" or "lot" also works)\n'
     '  "use map"    source plate barcodes are drawn in block 2 (bare "map" also works)\n'
     '  "use biomek" lots come from a Biomek worklist tab (bare "biomek" also works)\n'
-    '  "NA", "n/a", "n.a.", "n.a", "none"   no source plate; each compound gets the newest '
-    'lot registered by USERS\n'
+    '  "use my name" (or "use users", "NA", "n/a", "n.a.", "n.a", "none")   no source plate; '
+    'each compound gets the newest lot registered by USERS; source plate and well are written as NA\n'
     '  one or more source plate barcodes separated by ";", e.g. "PLATE1-MA01; PLATE2-MA01"')
 
 
-NO_SOURCE_PLATE_WORDS = {'na', 'n/a', 'n.a', 'n.a.', 'none'}
+NO_SOURCE_PLATE_WORDS = {'na', 'n/a', 'n.a', 'n.a.', 'none',
+                         # same rule, said as "look the lot up by my name"
+                         'use my name', 'use users', 'use user', 'use name', 'my name', 'users'}
 
 
 def _source_plate_mode(value):
