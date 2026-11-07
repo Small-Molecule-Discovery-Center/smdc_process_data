@@ -150,9 +150,19 @@ def test_tidy_envision_files_touches_only_the_files_given(tmp_path):
     assert len(lines[0].split(',')) == 25 and lines[1] == ''      # trimmed, blank line kept
     assert len(other.read_text().split(',')) == 27                # not listed: untouched
     again = raw_data_parsers.tidy_envision_files(str(wide))
-    assert again.iloc[0, 1:].sum() == 0                           # already tidy
+    assert again.iloc[0, 1:4].sum() == 0                          # already tidy
 
 
 def test_tidy_envision_files_names_missing_files(tmp_path):
     with pytest.raises(FileNotFoundError, match='nope.csv'):
         raw_data_parsers.tidy_envision_files([str(tmp_path / 'nope.csv')])
+
+
+def test_tidy_flags_reads_with_different_well_counts(tmp_path, monkeypatch):
+    f = tmp_path / 'run_4310.csv'
+    f.write_text('x\n')
+    parsed = pd.DataFrame({'plate': ['p'] * 4, 'row': list('ABCD'), 'col': [1] * 4,
+                           'ch1': [1, 1, 1, 9], 'ch2': [1, 1, 1, None], 'well': ['A01', 'B01', 'C01', 'D01']})
+    monkeypatch.setattr(raw_data_parsers, 'parse_envision_files', lambda **k: parsed)
+    out = raw_data_parsers.tidy_envision_files([str(f)])
+    assert out['wells per read'].tolist() == ['4/3'] and bool(out['reads differ'].iloc[0])

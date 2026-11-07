@@ -703,6 +703,16 @@ def main(argv=None) -> int:
     return 1 if any(r.verdict in flagged for r in results) else 0
 
 
+def _outside_toload(folder):
+    """The folder above the first toload / toload_<n> part of folder's path,
+    or folder itself if it has none."""
+    parts = os.path.normpath(folder).split(os.sep)
+    for i, part in enumerate(parts):
+        if re.fullmatch(r'toload(_\d+)?', part, flags=re.IGNORECASE):
+            return os.sep.join(parts[:i]) or os.sep
+    return folder
+
+
 def check_upload_folder(folders, summary_name="folder_summary.csv", detail_name="folder_plate_details.csv",
                         report_dir=None):
     """Run the audit on upload folders and return the ones that are not OK.
@@ -715,8 +725,10 @@ def check_upload_folder(folders, summary_name="folder_summary.csv", detail_name=
             not older assays in the same output folder. A single folder is
             walked for every grid_num.txt under it.
         report_dir (str, optional): where to write the two report CSVs,
-            replacing any from an earlier run. Default: the folder itself, or
-            the deepest folder the listed folders have in common.
+            replacing any from an earlier run. Default: the folder above the
+            toload_<n> folders (the assay folder), or the deepest folder the
+            listed folders have in common above that. Never inside a toload
+            folder: Pipeline Pilot reads every CSV there as an EnVision export.
     Returns:
         DataFrame: summary rows whose verdict is not OK (empty means
             everything matched).
@@ -729,7 +741,7 @@ def check_upload_folder(folders, summary_name="folder_summary.csv", detail_name=
     folders = [_resolve_share_path(str(f)) for f in folders]
     if not folders:
         raise ValueError("No folders to check.")
-    report_dir = report_dir or (folders[0] if len(folders) == 1 else os.path.commonpath(folders))
+    report_dir = report_dir or os.path.commonpath([_outside_toload(f) for f in folders])
     summary_csv = os.path.join(report_dir, summary_name)
     detail_csv = os.path.join(report_dir, detail_name)
     if os.path.exists(summary_csv):
