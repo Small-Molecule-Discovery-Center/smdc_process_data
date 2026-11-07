@@ -1975,13 +1975,17 @@ def handle_zero_concentrations(dids):
     if conc_col not in dids.columns:
         return dids
 
-    zero_mask = dids[conc_col] == 0
-    # Control wells (Sci_PosControl / Sci_NegControl) usually hold no compound,
-    # so scientists write 0 for them. They are not empty: keep them, or the
-    # control flags never reach the manifest.
+    # Control wells (Sci_PosControl / Sci_NegControl) hold no compound, so they
+    # have no concentration: blank it (written as NA), whatever the map says,
+    # and keep the well, or the control flags never reach the manifest.
+    controls = pd.Series(False, index=dids.index)
     for flag in ('Sci_PosControl', 'Sci_NegControl'):
         if flag in dids.columns:
-            zero_mask &= ~dids[flag].fillna(False).astype(bool)
+            controls |= dids[flag].fillna(False).astype(bool)
+    if controls.any():
+        dids = dids.copy()
+        dids.loc[controls, conc_col] = np.nan
+    zero_mask = (dids[conc_col] == 0) & ~controls
     n_zero = int(zero_mask.sum())
     if n_zero == 0:
         return dids

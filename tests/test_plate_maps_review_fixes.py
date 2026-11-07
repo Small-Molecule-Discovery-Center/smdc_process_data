@@ -519,3 +519,4 @@ def test_zero_conc_control_wells_are_kept():
                          'Sci_NegControl': [False, False, True, False]})
     out = pm.handle_zero_concentrations(dids)
     assert out['Destination well'].tolist() == ['A01', 'J01', 'K01']   # only the truly empty well goes
+    assert out['[compound] uM'].isna().tolist() == [False, True, True]  # controls have no conc
