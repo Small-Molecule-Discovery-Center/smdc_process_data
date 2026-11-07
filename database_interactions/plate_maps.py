@@ -1976,6 +1976,12 @@ def handle_zero_concentrations(dids):
         return dids
 
     zero_mask = dids[conc_col] == 0
+    # Control wells (Sci_PosControl / Sci_NegControl) usually hold no compound,
+    # so scientists write 0 for them. They are not empty: keep them, or the
+    # control flags never reach the manifest.
+    for flag in ('Sci_PosControl', 'Sci_NegControl'):
+        if flag in dids.columns:
+            zero_mask &= ~dids[flag].fillna(False).astype(bool)
     n_zero = int(zero_mask.sum())
     if n_zero == 0:
         return dids
@@ -2202,6 +2208,8 @@ def check_dr_plates(info, draw=True):
                                 if 'Source plate' in dr else len(compounds)),
             'no conc': (int(compounds['[compound] uM'].isna().sum())
                         if '[compound] uM' in dr else len(compounds)),
+        'positive control wells': int(dr['Sci_PosControl'].astype(bool).sum()) if 'Sci_PosControl' in dr else 0,
+        'negative control wells': int(dr['Sci_NegControl'].astype(bool).sum()) if 'Sci_NegControl' in dr else 0,
             'file': path,
         })
         if draw:

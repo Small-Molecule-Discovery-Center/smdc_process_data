@@ -510,3 +510,12 @@ def test_share_path_maps_windows_paths_and_names_missing_ones(tmp_path):
     assert pm.share_path(r'Z:\SMDC\a.xlsx', str(tmp_path), 'INFILE') == os.path.join(str(tmp_path), 'SMDC/a.xlsx')
     with pytest.raises(FileNotFoundError, match=r"INFILE not found: 'Z:\\\\SMDC\\\\b.xlsx' \(looked for"):
         pm.share_path(r'Z:\SMDC\b.xlsx', str(tmp_path), 'INFILE')
+
+
+def test_zero_conc_control_wells_are_kept():
+    dids = pd.DataFrame({'Destination well': ['A01', 'J01', 'K01', 'L01'],
+                         '[compound] uM': [10.0, 0.0, 0.0, 0.0],
+                         'Sci_PosControl': [False, True, False, False],
+                         'Sci_NegControl': [False, False, True, False]})
+    out = pm.handle_zero_concentrations(dids)
+    assert out['Destination well'].tolist() == ['A01', 'J01', 'K01']   # only the truly empty well goes
