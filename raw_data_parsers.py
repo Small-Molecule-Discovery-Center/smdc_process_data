@@ -931,16 +931,17 @@ def tidy_envision_files(paths, ncols: int = 25, required_empty_lines: int = 3) -
         _, inserted = ensure_calc_spacing_in_file(p, required_empty_lines)
         _, zblocks = fill_zprime_blocks_in_file(p)
         counts = _wells_per_read(p)
+        problems = check_envision_csv(p)
         rows.append({'file': p, 'rows trimmed': trimmed, 'blank lines inserted': inserted,
                      "Z' blocks filled": zblocks, 'wells per read': '/'.join(map(str, counts)),
-                     'reads differ': len(set(counts)) > 1})
-    cols = ['file', 'rows trimmed', 'blank lines inserted', "Z' blocks filled", 'wells per read', 'reads differ']
+                     'reads differ': len(set(counts)) > 1, 'problems': '; '.join(problems)})
+    cols = ['file', 'rows trimmed', 'blank lines inserted', "Z' blocks filled", 'wells per read', 'reads differ',
+            'problems']
     out = pd.DataFrame(rows, columns=cols)
     changed = int((out.iloc[:, 1:4].sum(axis=1) > 0).sum()) if len(out) else 0
-    for _, r in out[out['reads differ'].astype(bool)].iterrows():
-        logger.warning(f"{r['file']}: the reads have data in different numbers of wells ({r['wells per read']}). "
-                       "Pipeline Pilot's Merge Plates fails on this ('Well property size mismatch'). Look for "
-                       "values pasted outside the plate grid or a read that covers different wells, and fix the file.")
+    for _, r in out[out['problems'] != ''].iterrows():
+        logger.warning(f"{r['file']} doesn't look like an untouched EnVision export, and tidying can't fix it: "
+                       f"{r['problems']}. Remove the stray values by hand (leave missing wells blank, not 0).")
     note = f" (skipped {skipped} non-CSV file(s))" if skipped else ""
     if not csvs:
         logger.warning(f"No CSV files to tidy{note}.")
@@ -949,3 +950,80 @@ def tidy_envision_files(paths, ncols: int = 25, required_empty_lines: int = 3) -
     else:
         logger.info(f"Found {len(csvs)} CSV file(s){note}: all already tidy, nothing changed")
     return out
+
+
+_GRID_ROW = re.compile(r'^[A-Z]{1,2}$')
+
+
+def check_envision_csv(csv_path: str, plate_type: str = None, max_problems: int = 10) -> list:
+    """Check that an EnVision CSV still looks like an instrument export.
+
+    Catches the hand edits that make Pipeline Pilot's EnVision reader fail:
+    values pasted outside the plate grid or over the Plate information /
+    Background information lines, extra rows or columns in a plate grid, and
+    reads (measurement blocks) that cover different numbers of wells, which is
+    what makes Merge Plates fail with "Well property size mismatch". Only the
+    part before "Basic assay information" is checked; the protocol details
+    after it have no fixed layout. The plate format (96/384/1536) is read from
+    the first plate grid's column numbers unless plate_type is given.
+
+    Returns:
+        list[str]: problems, each naming the line. Empty = looks compliant.
+    """
+    with open(csv_path, newline='') as f:
+        lines = list(csv.reader(f))
+    problems = []
+    if plate_type is None:
+        widths = [sum(1 for v in r[1:] if str(v).strip()) for r in lines
+                  if r and not r[0].strip() and len(r) > 1 and str(r[1]).strip().lstrip('0') == '1']
+        by_cols = {v[2]: k for k, v in plate_dict.items()}
+        plate_type = next((by_cols[w] for w in widths if w in by_cols), '384')
+    ncols, nrows = plate_dict[str(plate_type)][2], plate_dict[str(plate_type)][1]
+
+    def filled(row, start=0):
+        return [i for i, v in enumerate(row) if i >= start and str(v).strip()]
+
+    section, width, grid_rows = None, 0, 0
+    for n, row in enumerate(lines, start=1):
+        first = row[0].strip() if row else ''
+        if first.startswith('Basic assay information'):
+            break
+        cells = filled(row)
+        if not cells:                                   # blank line ends a section
+            section = None
+            continue
+        if first.startswith(('Plate information', 'Background information')):
+            section, width = 'info_title', 0
+            extra = filled(row, 1)
+        elif first.startswith(('Calculated results', 'Results for')) or (first and section is None
+                                                                           and not _GRID_ROW.match(first)):
+            section = 'title'
+            extra = filled(row, 1)
+        elif section == 'info_title':                   # header row: its named columns are the limit
+            width = next((i for i, v in enumerate(row) if not str(v).strip()), len(row))
+            section = 'info'
+            extra = filled(row, width)
+        elif section == 'info':
+            extra = filled(row, width)
+        elif first == '' and [str(row[i]).strip().lstrip('0') for i in cells] == [str(k) for k in range(1, len(cells) + 1)]:
+            section, grid_rows = 'grid', 0              # column-number header of a plate grid
+            extra = filled(row, ncols + 1)
+        elif section == 'grid' and _GRID_ROW.match(first):
+            grid_rows += 1
+            extra = filled(row, ncols + 1)
+            if grid_rows > nrows:
+                problems.append(f"line {n}: plate grid has more than {nrows} rows")
+        else:
+            extra = cells                               # values where no data belongs
+        if extra:
+            cols = ', '.join(str(i + 1) for i in extra[:6]) + (' ...' if len(extra) > 6 else '')
+            problems.append(f"line {n} ({first[:30] or 'blank first cell'}): unexpected values in column(s) {cols}")
+        if len(problems) >= max_problems:
+            problems.append('... more problems not listed')
+            return problems
+
+    counts = _wells_per_read(csv_path, plate_type)
+    if len(set(counts)) > 1:
+        problems.append(f"reads have data in different numbers of wells ({'/'.join(map(str, counts))}); "
+                        "Pipeline Pilot's Merge Plates fails on this ('Well property size mismatch')")
+    return problems
