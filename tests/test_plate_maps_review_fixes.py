@@ -227,6 +227,7 @@ def test_folder_pipeline_passes_each_plate_its_own_row(tmp_path, monkeypatch):
     assert pm.load_folders(result) == [str(folder)]
     assert (folder / 'grid_num.txt').read_text().split() == ['grid_num', 'P1', 'P2', 'P3', 'P4']
     assert (folder / 'run.csv').exists()
+    assert pm.raw_files(result) == [str(folder / 'run.csv')]
 
 
 def _dids():
