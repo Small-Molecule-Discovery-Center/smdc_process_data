@@ -314,7 +314,8 @@ def assign_wells_by_idx(df, plate_col='Destination Plate', well_col='Destination
 
 ###############################################################################
 def draw_plate_heatmap(barcode='OTPARP1234-Eco1', df=None, wells='Well', values='SMDC_ID', labels='SMDC_ID',
-                       plate_size=None, center=None, vmin=None, vmax=None, width=25, outdir=None, engine=None):
+                       plate_size=None, center=None, vmin=None, vmax=None, width=25, outdir=None, engine=None,
+                       cbar=None, cmap=None):
     """
     Draw a heatmap of one plate, for visual QC of a layout or a result.
 
@@ -332,6 +333,8 @@ def draw_plate_heatmap(barcode='OTPARP1234-Eco1', df=None, wells='Well', values=
         width (int): Figure width in inches; height is width/3.
         outdir (path, optional): If given, save <barcode>.png here and close the
             figure instead of leaving it open.
+        cbar (bool, optional): show the colourbar. Default: on, except for SMDC IDs.
+        cmap (optional): passed through to sns.heatmap.
     Returns:
         tuple: (df, pl, plabels) - the cleaned long-form frame, the pivoted
             value grid, and the pivoted label grid. Returned mainly for
@@ -382,7 +385,7 @@ def draw_plate_heatmap(barcode='OTPARP1234-Eco1', df=None, wells='Well', values=
     df.Row = pd.Categorical(df.Row, categories=plate_rows_dict[plate_size], ordered=True)
     df.Col = pd.Categorical(df.Col, categories=plate_cols_dict[plate_size], ordered=True)
 
-    cbar = True
+    cbar_override, cbar = cbar, True
     pl = df.pivot_table(columns='Col', index='Row', values=values, dropna=False, observed=False)
     pl = pl.astype(float)
     if labels is not None:
@@ -400,6 +403,8 @@ def draw_plate_heatmap(barcode='OTPARP1234-Eco1', df=None, wells='Well', values=
             cbar = False
     else:
         plabels = None
+    if cbar_override is not None:
+        cbar = cbar_override
 
     if cbar:
         fig, (ax, cax) = plt.subplots(1, 2, figsize=(width, width / 3), gridspec_kw={"width_ratios": [1, .01]})
@@ -407,7 +412,7 @@ def draw_plate_heatmap(barcode='OTPARP1234-Eco1', df=None, wells='Well', values=
         fig, ax = plt.subplots(1, figsize=(width, width / 3))
         cax = None
     sns.heatmap(pl, annot=plabels, fmt='s', linewidth=1, linecolor='white', ax=ax, cbar_ax=cax, cbar=cbar,
-                center=center, vmin=vmin, vmax=vmax,
+                center=center, vmin=vmin, vmax=vmax, cmap=cmap,
                 annot_kws={"size": 7}
                 )
     ax.grid(which='major')
@@ -2156,6 +2161,22 @@ def raw_files(info):
     return list(files)
 
 
+def _draw_dr_layout(grid_num, dr):
+    """Draw a DR file as a plate: SMDC ID in compound wells, POS / NEG in
+    control wells, coloured by well type (compound, positive, negative)."""
+    from matplotlib.colors import ListedColormap
+    d = dr[['Destination well', 'SMDC_ID']].copy()
+    pos = dr['Sci_PosControl'].astype(bool) if 'Sci_PosControl' in dr else False
+    neg = dr['Sci_NegControl'].astype(bool) if 'Sci_NegControl' in dr else False
+    ids = pd.to_numeric(d.SMDC_ID, errors='coerce')
+    d['layout: compound / POS / NEG'] = np.where(pos, 2.0, np.where(neg, 3.0, np.where(ids.notna(), 1.0, np.nan)))
+    d['label'] = np.where(pos, 'POS', np.where(neg, 'NEG', ids.map(lambda v: '' if pd.isna(v) else str(int(v)))))
+    d['label'] = d['label'].replace('', np.nan)
+    draw_plate_heatmap(barcode=grid_num, df=d, wells='Destination well',
+                       values='layout: compound / POS / NEG', labels='label', plate_size=384, vmin=1, vmax=3, cbar=False,
+                       cmap=ListedColormap(['#cfe3f5', '#9be3a3', '#f5a3a3']))
+
+
 _ID_CELL = re.compile(r'^\s*(\d+)(?:\.0+)?(?:\s*-\s*\d+)?\s*$')
 
 
@@ -2217,8 +2238,7 @@ def check_dr_plates(info, draw=True):
             'file': path,
         })
         if draw:
-            draw_plate_heatmap(barcode=grid_num, df=dr, wells='Destination well', values='SMDC_ID',
-                               labels='SMDC_ID', plate_size=384)
+            _draw_dr_layout(grid_num, dr)
             if '[compound] uM' in dr and dr['[compound] uM'].notna().any():
                 draw_plate_heatmap(barcode=grid_num, df=dr, wells='Destination well',
                                    values='[compound] uM', labels='[compound] uM', plate_size=384)
