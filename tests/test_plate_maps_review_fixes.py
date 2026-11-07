@@ -489,3 +489,23 @@ def test_check_dr_plates_finds_wells_that_differ_from_the_input(tmp_path, monkey
 def test_check_dr_plates_needs_the_info_step_2_returned():
     with pytest.raises(ValueError, match='DR plate files'):
         pm.check_dr_plates(pd.DataFrame({'Grid_num': ['P1']}))
+
+
+def test_share_root_asks_for_the_mount_when_wsl_has_no_z(monkeypatch):
+    monkeypatch.delenv('smdc_share_root', raising=False)
+    monkeypatch.setattr(pm.os.path, 'isdir', lambda p: False)
+    monkeypatch.setattr(pm, '_is_wsl', lambda: True)
+    with pytest.raises(FileNotFoundError, match='not mounted at /mnt/z.*SHARE_ROOT'):
+        pm.default_share_root()
+    monkeypatch.setattr(pm, '_is_wsl', lambda: False)
+    if pm.os.name != 'nt':
+        with pytest.raises(FileNotFoundError, match="Can't find the Montreal share.*SHARE_ROOT"):
+            pm.default_share_root()
+
+
+def test_share_path_maps_windows_paths_and_names_missing_ones(tmp_path):
+    (tmp_path / 'SMDC').mkdir()
+    (tmp_path / 'SMDC' / 'a.xlsx').write_text('x')
+    assert pm.share_path(r'Z:\SMDC\a.xlsx', str(tmp_path), 'INFILE') == os.path.join(str(tmp_path), 'SMDC/a.xlsx')
+    with pytest.raises(FileNotFoundError, match=r"INFILE not found: 'Z:\\\\SMDC\\\\b.xlsx' \(looked for"):
+        pm.share_path(r'Z:\SMDC\b.xlsx', str(tmp_path), 'INFILE')
