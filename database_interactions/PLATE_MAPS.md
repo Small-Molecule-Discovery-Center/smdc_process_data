@@ -236,7 +236,7 @@ barcode that contains `MAP` or `lot` is still read as a barcode:
 
 | Value | Behaviour |
 |---|---|
-| `NA`, `n/a`, `n.a.`, `none` | No source plate exists (compounds added by hand). Source plate and well become the literal string `NA`, and each compound gets the newest lot registered by `users` (the notebook's `USERS`), unless the lot is pinned as `285699-2` in block 0. |
+| `use my name`, `use users`, `NA`, `n/a`, `n.a.`, `none` | No source plate exists (compounds added by hand). Source plate and well become the literal string `NA`, and each compound gets the newest lot registered by `users` (the notebook's `USERS`), unless the lot is pinned as `285699-2` in block 0. |
 | `use lots` (or `lots`) | Lots are drawn in block 2. Source plates are then looked up from (SMDC_ID, Lot), on MA01 plates. |
 | `use map` (or `map`) | Source plate barcodes are drawn in block 2, i.e. wells came from different plates. |
 | `use biomek` | The sheet is already a long-format Biomek worklist, not a block grid. Source wells are read directly from it; block parsing is skipped entirely. This branch also **overwrites** the worklist's SMDC ID column with the database's answer. |
