@@ -135,3 +135,24 @@ def test_tidy_steps_say_how_many_files_they_found(tmp_path, caplog):
         assert raw_data_parsers.ensure_calc_spacing_in_dir(str(tmp_path)) == (2, 0, 0)
         assert raw_data_parsers.fill_zprime_blocks_in_dir(str(tmp_path)) == (0, 0)
     assert 'Found 2 CSV file(s)' in caplog.text and 'nothing changed' in caplog.text
+
+
+def test_tidy_envision_files_touches_only_the_files_given(tmp_path):
+    wide = tmp_path / 'toload.csv'
+    wide.write_text('\n'.join([','.join(['A'] + ['1'] * 26), '', ','.join(['B'] + ['2'] * 24)]) + '\n')
+    other = tmp_path / 'not_listed.csv'
+    other.write_text(','.join(['A'] + ['1'] * 26) + '\n')
+    rpt = tmp_path / 'run.rpt'
+    rpt.write_text('x')
+    out = raw_data_parsers.tidy_envision_files([str(wide), str(rpt)])
+    assert out['file'].tolist() == [str(wide)] and out['rows trimmed'].tolist() == [1]
+    lines = wide.read_text().split('\n')
+    assert len(lines[0].split(',')) == 25 and lines[1] == ''      # trimmed, blank line kept
+    assert len(other.read_text().split(',')) == 27                # not listed: untouched
+    again = raw_data_parsers.tidy_envision_files(str(wide))
+    assert again.iloc[0, 1:].sum() == 0                           # already tidy
+
+
+def test_tidy_envision_files_names_missing_files(tmp_path):
+    with pytest.raises(FileNotFoundError, match='nope.csv'):
+        raw_data_parsers.tidy_envision_files([str(tmp_path / 'nope.csv')])

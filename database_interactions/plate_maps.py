@@ -2043,6 +2043,7 @@ def make_dr_platemaps_and_folders(infile='', users=[("Amanda", "Paulson")], base
         _check_source_plates(info)  # fail now, not after folders are made and files copied
     load_folders = []
     dr_plates = []  # (grid_num, path) of every *_DR_plate.xlsx written, for check_dr_plates
+    raw_files = []  # raw instrument files copied into the toload folders, for tidying
 
     # One instrument file may back several plates, so group by file.
     for df, rpt in _iter_load_groups(info):
@@ -2106,12 +2107,15 @@ def make_dr_platemaps_and_folders(infile='', users=[("Amanda", "Paulson")], base
                     f"Raw_data_file for {row.Grid_num} not found: {origfile!r}. Check the Info tab's "
                     f"Raw_data_file path. If the share is mounted somewhere else: {SHARE_ROOT_HELP}")
             _copy_file(origfile, outfile)
+            if outfile not in raw_files:
+                raw_files.append(outfile)
             elapsed = time.time() - starttime
             logger.info(f'Done copying in {humanize.precisedelta(elapsed, minimum_unit="seconds", format="%d")}')
     # The toload_<i>/<date> folders this run wrote to, so later steps (the
     # EnVision check) look only at them and not at older assays in basedir.
     info.attrs['load_folders'] = load_folders
     info.attrs['dr_plates'] = dr_plates
+    info.attrs['raw_files'] = raw_files
     info.attrs['infile'] = infile
     return info
 
@@ -2130,6 +2134,16 @@ def load_folders(info):
         raise ValueError("info has no record of its load folders. Pass the DataFrame that "
                          "make_dr_platemaps_and_folders returned, not a copy or a re-read Info sheet.")
     return list(folders)
+
+
+def raw_files(info):
+    """The raw instrument files make_dr_platemaps_and_folders copied into
+    the toload folders (one per Raw_data_file), in the order it copied them."""
+    files = info.attrs.get('raw_files')
+    if files is None:
+        raise ValueError("info has no record of its raw files. Pass the DataFrame that "
+                         "make_dr_platemaps_and_folders returned, not a copy or a re-read Info sheet.")
+    return list(files)
 
 
 _ID_CELL = re.compile(r'^\s*(\d+)(?:\.0+)?(?:\s*-\s*\d+)?\s*$')

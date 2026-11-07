@@ -864,3 +864,67 @@ def extract_rpt_data(infile, samples_only=False, outdir="./"):
         return df[['Sample', 'Plate', 'Well', 'Fname', 'intensitymax', 'massatmax',]]
     return df
 
+
+
+def trim_csv_columns_in_file(csv_path: str, ncols: int = 25) -> Tuple[bool, int]:
+    """Cut every row of a CSV to its first ncols fields, in place.
+
+    For EnVision exports where someone typed in columns past the plate
+    (row label + 24 columns = 25). Blank lines and quoting are kept, and the
+    file is only rewritten when a row was longer than ncols.
+
+    Returns:
+        (changed, rows_trimmed)
+    """
+    with open(csv_path, newline='') as f:
+        text = f.read()
+    newline = '\r\n' if '\r\n' in text else '\n'
+    rows = list(csv.reader(text.splitlines()))
+    trimmed = sum(len(r) > ncols for r in rows)
+    if not trimmed:
+        return (False, 0)
+    with open(csv_path, 'w', newline='') as f:
+        writer = csv.writer(f, lineterminator=newline)
+        for r in rows:
+            writer.writerow(r[:ncols])
+    logger.info(f"Trimmed {trimmed} row(s) of {csv_path} to {ncols} columns")
+    return (True, trimmed)
+
+
+def tidy_envision_files(paths, ncols: int = 25, required_empty_lines: int = 3) -> pd.DataFrame:
+    """Tidy the given EnVision CSVs in place: trim extra columns, put
+    required_empty_lines blank lines above each calculated-results block, and
+    fill empty Z' blocks.
+
+    Meant for the raw files make_dr_platemaps_and_folders copied into the
+    toload folders (plate_maps.raw_files(info)), so only the files that will
+    be uploaded are touched and the originals on the share are left alone.
+    Non-CSV paths (e.g. .rpt) are skipped.
+
+    Returns:
+        DataFrame with one row per CSV: rows trimmed, blank lines inserted and
+        Z' blocks filled (all 0 = the file was already tidy).
+    """
+    paths = [str(p) for p in ([paths] if isinstance(paths, (str, os.PathLike)) else paths)]
+    missing = [p for p in paths if not os.path.isfile(p)]
+    if missing:
+        raise FileNotFoundError(f"File(s) not found: {missing}")
+    csvs = [p for p in paths if p.lower().endswith('.csv') and not os.path.basename(p).startswith('._')]
+    skipped = len(paths) - len(csvs)
+    rows = []
+    for p in csvs:
+        _, trimmed = trim_csv_columns_in_file(p, ncols)
+        _, inserted = ensure_calc_spacing_in_file(p, required_empty_lines)
+        _, zblocks = fill_zprime_blocks_in_file(p)
+        rows.append({'file': p, 'rows trimmed': trimmed, 'blank lines inserted': inserted,
+                     "Z' blocks filled": zblocks})
+    out = pd.DataFrame(rows, columns=['file', 'rows trimmed', 'blank lines inserted', "Z' blocks filled"])
+    changed = int((out.iloc[:, 1:].sum(axis=1) > 0).sum()) if len(out) else 0
+    note = f" (skipped {skipped} non-CSV file(s))" if skipped else ""
+    if not csvs:
+        logger.warning(f"No CSV files to tidy{note}.")
+    elif changed:
+        logger.info(f"Found {len(csvs)} CSV file(s){note}: tidied {changed}, {len(csvs) - changed} already tidy")
+    else:
+        logger.info(f"Found {len(csvs)} CSV file(s){note}: all already tidy, nothing changed")
+    return out
