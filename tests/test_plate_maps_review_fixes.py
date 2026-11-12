@@ -529,16 +529,27 @@ def test_concentrations_that_print_the_same_become_equal():
     assert out[0] == out[1] and out[2] == 250.0 and np.isnan(out[3]) and out[4] == 0.03810394
 
 
-def test_old_or_future_screen_dates_are_flagged(caplog):
+def test_old_or_future_screen_dates_are_flagged(caplog, tmp_path):
     info = pd.DataFrame({'Grid_num': ['P1', 'P2', 'P3', 'P4'], 'Raw_assay_ID': [2875, 2974, 2974, 3001],
                          'Assay_name': ['a', 'b', 'b', 'c'],
-                         'Date_of_screen': [20240605, 20240611, 20240611, 20261101]})
+                         'Date_of_screen': [20240605, 20240611, 20240611, 20261101],
+                         'Raw_data_file': ['x.rpt'] * 4})
     with caplog.at_level('WARNING'):
-        flagged = pm.check_screen_dates(info, today='2026-11-12')
+        flagged = pm.check_screen_dates(info, today='2026-11-12', share_root=str(tmp_path))
     assert flagged.Grid_num.tolist() == ['P1', 'P2', 'P3']               # 3001 is 11 days old: fine
     assert '2 assay version(s)' in caplog.text and 'plates P2, P3' in caplog.text
-    assert 'historical data' in caplog.text
-    assert pm.check_screen_dates(info.assign(Date_of_screen=20261201), today='2026-11-12').shape[0] == 4  # future
+    assert 'historical' in caplog.text
+    future = pm.check_screen_dates(info.assign(Date_of_screen=20261201), today='2026-11-12', share_root=str(tmp_path))
+    assert set(future.reason) == {'in the future'}
+
+
+def test_screen_date_is_checked_against_the_envision_file(tmp_path):
+    (tmp_path / 'run.csv').write_text('Plate information,,\nAssay Started: ,,,,6/11/2026 2:29:18 PM,,\n')
+    info = pd.DataFrame({'Grid_num': ['P1', 'P2'], 'Raw_assay_ID': [1, 2], 'Assay_name': ['a', 'b'],
+                         'Date_of_screen': [20240611, 20260611], 'Raw_data_file': ['run.csv', r'Z:\run.csv']})
+    flagged = pm.check_screen_dates(info, today='2026-11-12', share_root=str(tmp_path))
+    assert flagged.Grid_num.tolist() == ['P1']                          # P2 matches the file, though 5 months old
+    assert flagged.reason[0] == 'the EnVision file says it ran 2026-06-11'
 
 
 def test_destination_plates_duplicated_or_already_in_hits(monkeypatch, caplog):

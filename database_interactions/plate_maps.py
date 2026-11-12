@@ -88,6 +88,7 @@ import logging
 import shutil
 import filecmp
 import re
+import datetime
 from sqlalchemy import bindparam, text
 from sqlalchemy.exc import DBAPIError
 
@@ -1324,46 +1325,99 @@ NO_SOURCE_PLATE_WORDS = {'na', 'n/a', 'n.a', 'n.a.', 'none',
 
 OLD_SCREEN_DAYS = 92   # about 3 months
 
+_ENVISION_STARTED = re.compile(r'^\s*Assay Started:\s*,+\s*([^,]+)', re.IGNORECASE)
 
-def check_screen_dates(info, max_age_days=OLD_SCREEN_DAYS, today=None):
-    """Warn about assay versions whose Date_of_screen is more than ~3 months
-    old, or in the future.
 
-    Recent data is the normal case; an old date usually means either a
-    historical upload or a typo (often the year). It's a warning, not an
-    error, so historical data still goes through.
+def envision_run_date(path):
+    """The date an EnVision export says the assay ran ('Assay Started:'), or
+    None if the file isn't an EnVision CSV or has no readable date."""
+    if not str(path).lower().endswith('.csv') or not os.path.isfile(path):
+        return None
+    try:
+        with open(path, newline='', errors='replace') as f:
+            for line in f:
+                m = _ENVISION_STARTED.match(line)
+                if m:
+                    value = m.group(1).strip()
+                    for fmt in ('%m/%d/%Y %I:%M:%S %p', '%m/%d/%Y %H:%M:%S', '%m/%d/%Y'):
+                        try:
+                            return pd.Timestamp(datetime.datetime.strptime(value, fmt)).normalize()
+                        except ValueError:
+                            pass
+                    stamp = pd.to_datetime(value, errors='coerce')
+                    return None if pd.isna(stamp) else stamp.normalize()
+    except OSError:
+        return None
+    return None
+
+
+def check_screen_dates(info, max_age_days=OLD_SCREEN_DAYS, today=None, share_root=None):
+    """Warn about Date_of_screen values that look wrong.
+
+    For each Info row whose Raw_data_file is an EnVision CSV with an
+    'Assay Started:' date, Date_of_screen is compared with that date and any
+    difference is flagged. Rows without one (other instruments, file not
+    found) fall back to the age rule: more than ~3 months old, or in the
+    future, is flagged and the operator is asked whether it is historical
+    data or a wrong date. Warnings only, so historical data still goes
+    through.
 
     Args:
         info (DataFrame): the parsed Info sheet (Date_of_screen as YYYYMMDD ints).
-        max_age_days (int): older than this is flagged. Default about 3 months.
+        max_age_days (int): the fallback age limit. Default about 3 months.
         today (date, optional): for tests. Default: today.
+        share_root (str, optional): where the share is mounted, to find
+            Raw_data_file. Default: default_share_root(); if the share
+            can't be found, every row uses the age rule.
     Returns:
-        DataFrame: the flagged assay versions (empty if none).
+        DataFrame: the flagged rows with a 'reason' column (empty if none).
     """
-    cols = ['Raw_assay_ID', 'Assay_name', 'Date_of_screen', 'Grid_num']
+    cols = ['Raw_assay_ID', 'Assay_name', 'Date_of_screen', 'Grid_num', 'reason']
     if 'Date_of_screen' not in info.columns:
         return pd.DataFrame(columns=cols)
     today = pd.Timestamp(today or pd.Timestamp.today().normalize())
     dates = pd.to_datetime(info['Date_of_screen'].astype(str), format='%Y%m%d', errors='coerce')
-    age = (today - dates).dt.days
-    flagged = info.assign(_date=dates, _age=age)[(age > max_age_days) | (age < 0)]
+
+    def run_date(raw):
+        if not isinstance(raw, str) or not raw.strip():
+            return None
+        try:
+            root = share_root or default_share_root()
+            path = raw if os.path.exists(raw) else os.path.join(root, _normalize_share_path(raw))
+        except (FileNotFoundError, ValueError):
+            path = raw
+        return envision_run_date(path)
+
+    raw_col = info['Raw_data_file'] if 'Raw_data_file' in info.columns else pd.Series(None, index=info.index)
+    reasons = []
+    for date, raw in zip(dates, raw_col):
+        ran = run_date(raw)
+        if pd.isna(date):
+            reasons.append('unreadable Date_of_screen')
+        elif ran is not None:
+            reasons.append('' if ran == date else f'the EnVision file says it ran {ran:%Y-%m-%d}')
+        elif (today - date).days < 0:
+            reasons.append('in the future')
+        elif (today - date).days > max_age_days:
+            reasons.append(f'{(today - date).days} days old')
+        else:
+            reasons.append('')
+    flagged = info.assign(_date=dates, reason=reasons)[[r != '' for r in reasons]]
     if flagged.empty:
         return pd.DataFrame(columns=cols)
-    have = [c for c in cols if c in flagged.columns]
-    versions = (flagged.groupby([c for c in ('Raw_assay_ID', 'Assay_name', '_date') if c in flagged.columns],
-                                dropna=False)
-                .agg(plates=('Grid_num', lambda g: ', '.join(map(str, g))) if 'Grid_num' in flagged else ('_age', 'size'),
-                     age=('_age', 'first'))
-                .reset_index())
-    lines = []
-    for _, v in versions.iterrows():
-        when = 'in the future' if v.age < 0 else f'{int(v.age)} days ago'
-        lines.append(f"  assay {v.get('Raw_assay_ID', '?')} {v.get('Assay_name', '')}: "
-                     f"{v._date:%Y-%m-%d} ({when}); plates {v.plates}")
+    keys = [c for c in ('Raw_assay_ID', 'Assay_name', '_date', 'reason') if c in flagged.columns]
+    plates = flagged['Grid_num'].astype(str) if 'Grid_num' in flagged.columns else pd.Series('?', index=flagged.index)
+    versions = flagged.assign(_plates=plates).groupby(keys, dropna=False)['_plates'].agg(', '.join).reset_index()
+    lines = [f"  assay {v.get('Raw_assay_ID', '?')} {v.get('Assay_name', '')}: Date_of_screen "
+             f"{v._date:%Y-%m-%d} - {v.reason}; plates {v._plates}" if not pd.isna(v._date) else
+             f"  assay {v.get('Raw_assay_ID', '?')} {v.get('Assay_name', '')}: {v.reason}; plates {v._plates}"
+             for _, v in versions.iterrows()]
     logger.warning(
-        f"{len(versions)} assay version(s) have a Date_of_screen more than {max_age_days} days old or in "
-        "the future:\n" + '\n'.join(lines) + "\nIs this historical data? If so, carry on. If not, the "
-        "date in the Info tab is probably wrong (check the year): fix it and rerun step 2.")
+        f"Check Date_of_screen for {len(versions)} assay version(s):\n" + '\n'.join(lines) +
+        f"\nWhere the EnVision file has a different date, the Info tab is probably wrong. Otherwise, dates over "
+        f"{max_age_days} days old are fine for historical data; if this isn't historical, fix the date "
+        "(often the year) and rerun step 2.")
+    have = [c for c in cols if c in flagged.columns]
     return flagged[have].reset_index(drop=True)
 
 
@@ -2181,7 +2235,7 @@ def make_dr_platemaps_and_folders(infile='', users=[("Amanda", "Paulson")], base
     infile = resolve_share_path(infile, share_root)
     basedir = resolve_share_path(basedir, share_root)
     dp, info = _read_info_sheet(infile)
-    check_screen_dates(info)
+    check_screen_dates(info, share_root=share_root)
     if dose_response:
         _check_source_plates(info)  # fail now, not after folders are made and files copied
     check_destination_plates(info)
