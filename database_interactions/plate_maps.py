@@ -2339,7 +2339,63 @@ def make_dr_platemaps_and_folders(infile='', users=[("Amanda", "Paulson")], base
     info.attrs['dr_plates'] = dr_plates
     info.attrs['raw_files'] = raw_files
     info.attrs['infile'] = infile
+    if dr_plates:
+        check_dr_concentrations(info)
     return info
+
+
+def check_dr_concentrations(info, rel_tol=1e-3):
+    """Warn about concentrations that look like the same dilution written two ways.
+
+    Pipeline Pilot's DR upload stores one concentration row per assay and
+    value ("Insert Conc Variable"), shared by every plate and compound in that
+    assay, after rounding IW_FINAL_CONC_NM to the nearest 0.001 nM (1 fM):
+    SUBST_CONC_UM := Floor(IW_FINAL_CONC_NM * 1000 + 0.5) / 1000000.
+    Values equal at 1 fM merge cleanly. Values that still differ at 1 fM but
+    by less than rel_tol (0.1%) are almost certainly one dilution typed two
+    ways (e.g. 83.3333 and 83.33333), and would be stored as two separate
+    concentrations. Real dilution steps differ by far more than 0.1%.
+
+    Reads the DR files make_dr_platemaps_and_folders wrote, grouped by Assay ID.
+
+    Returns:
+        DataFrame, one row per suspicious pair: Assay ID, the two values in
+        uM, and the plates and wells holding each. Empty = nothing to fix.
+    """
+    dr_plates = info.attrs.get('dr_plates') or []
+    frames = []
+    for grid_num, path in dr_plates:
+        d = pd.read_excel(path)
+        if '[compound] uM' not in d:
+            continue
+        d['[compound] uM'] = pd.to_numeric(d['[compound] uM'], errors='coerce')
+        d = d[d['[compound] uM'].notna() & (d['[compound] uM'] > 0)]
+        frames.append(d.assign(**{'Destination plate': grid_num}))
+    cols = ['Assay ID', 'conc 1 uM', 'conc 2 uM', 'wells with conc 1', 'wells with conc 2']
+    if not frames:
+        return pd.DataFrame(columns=cols)
+    d = pd.concat(frames, ignore_index=True)
+    if 'Assay ID' not in d:
+        d['Assay ID'] = 'NA'
+    d['fM'] = np.floor(d['[compound] uM'] * 1e9 + 0.5).astype('int64')   # what PP stores, in fM
+    rows = []
+    for assay, g in d.groupby('Assay ID'):
+        levels = sorted(g.fM.unique())
+        for a, b in zip(levels, levels[1:]):
+            if (b - a) / a < rel_tol:
+                def where(v):
+                    w = g[g.fM == v]
+                    return ', '.join(f"{p} {x}" for p, x in zip(w['Destination plate'], w['Destination well']))
+                rows.append({'Assay ID': assay, 'conc 1 uM': a / 1e9, 'conc 2 uM': b / 1e9,
+                             'wells with conc 1': where(a), 'wells with conc 2': where(b)})
+    out = pd.DataFrame(rows, columns=cols)
+    if len(out):
+        logger.warning(f"{len(out)} pair(s) of concentrations differ by less than {rel_tol:.1%} but are not equal "
+                       "to 1 fM, so Pipeline Pilot would store them as separate concentrations. They are probably "
+                       "one dilution typed two ways: make them identical in the plate map and run step 2 again.\n"
+                       + '\n'.join(f"  assay {r['Assay ID']}: {r['conc 1 uM']:.12g} vs {r['conc 2 uM']:.12g} uM "
+                                   f"({r['wells with conc 1']} / {r['wells with conc 2']})" for _, r in out.iterrows()))
+    return out
 
 
 def load_folders(info):

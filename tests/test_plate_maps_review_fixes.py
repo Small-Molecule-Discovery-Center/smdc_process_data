@@ -605,3 +605,35 @@ def test_write_to_a_locked_file_says_to_close_it(tmp_path, monkeypatch):
     src.write_text('x\n')
     with pytest.raises(PermissionError, match='open in another program.*Close it'):
         pm._copy_file(str(src), str(tmp_path / 'copy.csv'))
+
+
+def test_check_dr_concentrations_flags_one_dilution_typed_two_ways(tmp_path, caplog):
+    def dr(name, concs, assay=2974):
+        path = tmp_path / f'{name}_DR_plate.xlsx'
+        pd.DataFrame({'SMDC_ID': [1] * len(concs), 'Destination well': [f'A{i + 1:02d}' for i in range(len(concs))],
+                      '[compound] uM': concs, 'Assay ID': assay}).to_excel(path, index=False)
+        return (name, str(path))
+    series = [250.0, 83.33333333333333, 27.77777777777778, 0.0381039]
+    info = pd.DataFrame()
+    info.attrs['dr_plates'] = [dr('p4309', series), dr('p4310', [250, 83.3333333333333, 27.77777777777778, 0.0381039]),
+                               dr('p4298', [83.3333], assay=2875)]
+    with caplog.at_level('WARNING'):
+        assert pm.check_dr_concentrations(info).empty      # equal at 1 fM, or in another assay
+    assert caplog.text == ''
+    info.attrs['dr_plates'].append(dr('p4311', [83.3333]))        # same assay, differs by 4e-7 relative
+    with caplog.at_level('WARNING'):
+        out = pm.check_dr_concentrations(info)
+    assert len(out) == 1 and out['Assay ID'].iloc[0] == 2974
+    assert out['conc 1 uM'].iloc[0] == pytest.approx(83.3333) and 'p4311 A01' in out['wells with conc 1'].iloc[0]
+    assert 'typed two ways' in caplog.text and '83.3333 vs 83.333333333' in caplog.text
+
+
+def test_check_dr_concentrations_catches_pasted_7_decimals(tmp_path):
+    paths = []
+    for name, c in [('a', 27.77777777777778), ('b', 27.7777778)]:      # 22 fM apart: two stored values
+        p = tmp_path / f'{name}.xlsx'
+        pd.DataFrame({'Destination well': ['A01'], '[compound] uM': [c], 'Assay ID': [1]}).to_excel(p, index=False)
+        paths.append((name, str(p)))
+    info = pd.DataFrame()
+    info.attrs['dr_plates'] = paths
+    assert len(pm.check_dr_concentrations(info)) == 1
