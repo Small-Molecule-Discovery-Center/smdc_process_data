@@ -1178,6 +1178,17 @@ def _block_layout_problems(lines, nrows=16):
             problems.append(f"line {n} (block starting here): expected {what} on line {off + 1} of the block, "
                             f"so row A lands on line 12 ({where}).{hint}")
             continue
+        # The column-number row must be exactly 1..ncols for this plate size
+        # (96: 12, 384: 24, 1536: 48), with nothing else on it.
+        ncols = {v[1]: v[2] for v in plate_dict.values()}.get(nrows)
+        if ncols:
+            header = [str(v).strip() for v in lines[b + 10]] if b + 10 < len(lines) else []
+            nums = [v.lstrip('0') or '0' for v in header[1:] if v]
+            if nums != [str(c) for c in range(1, ncols + 1)]:
+                got = f"{nums[0]} to {nums[-1]} ({len(nums)} columns)" if nums else "no column numbers"
+                problems.append(f"line {b + 11}: the column numbers of the grid that starts on line {b + 12} "
+                                f"should be 1 to {ncols} for a {nrows * ncols}-well plate; found {got}.")
+                continue
         # Every grid row keeps its letter even when its wells are blank, so a
         # blank row P still reads 'P'. Check the letters in order for each block
         # to tell a shifted block from a plate with an empty last row.

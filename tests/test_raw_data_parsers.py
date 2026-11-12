@@ -362,3 +362,17 @@ def test_tidy_says_to_close_a_locked_file(tmp_path, monkeypatch):
     monkeypatch.setattr(raw_data_parsers, 'trim_csv_columns_in_file', locked)
     with pytest.raises(PermissionError, match='locked.csv: it is open in another program'):
         raw_data_parsers.tidy_envision_files([str(f)])
+
+
+def test_layout_check_flags_wrong_row_or_column_counts_in_any_block():
+    def blk(rows='ABCDEFGHIJKLMNOP', ncols=24):
+        header = [''] + [f'{c:02d}' for c in range(1, ncols + 1)]
+        return ([['Plate information'], ['Plate', 'Repeat'], ['1', '1'], [], ['Background information'],
+                 ['Plate', 'Label'], ['1', 'x'], ['1', 'y'], [], ['Results for ch1'], header]
+                + [[r] + ['1'] * ncols for r in rows] + [[]])
+    ok = blk()
+    assert raw_data_parsers._block_layout_problems(ok + ok) == []
+    short = raw_data_parsers._block_layout_problems(ok + blk('ABCDEFGHIJKLMNO'))     # A-O, then a blank line
+    assert len(short) == 1 and 'expected row P' in short[0] and 'blank line' in short[0]
+    narrow = raw_data_parsers._block_layout_problems(ok + blk(ncols=23))
+    assert len(narrow) == 1 and 'should be 1 to 24' in narrow[0] and '23 columns' in narrow[0]
