@@ -1002,6 +1002,18 @@ def tidy_envision_files(paths, ncols: int = 25) -> pd.DataFrame:
 _GRID_ROW = re.compile(r'^[A-Z]{1,2}$')
 
 
+def _grid_row_labels(nrows):
+    """Row letters for a plate grid: A..P for 384, A..Z then AA..AF for 1536."""
+    labels = []
+    for number in range(1, nrows + 1):
+        label = ''
+        while number:
+            number, rem = divmod(number - 1, 26)
+            label = chr(65 + rem) + label
+        labels.append(label)
+    return labels
+
+
 def _block_layout_problems(lines, nrows=16):
     """Check each data block's layout, counting its 'Plate information' line as 1:
 
@@ -1049,9 +1061,18 @@ def _block_layout_problems(lines, nrows=16):
             problems.append(f"line {n} (block starting here): expected {what} on line {off + 1} of the block, "
                             f"so row A lands on line 12 ({where}).{hint}")
             continue
+        # Every grid row keeps its letter even when its wells are blank, so a
+        # blank row P still reads 'P'. Check the letters in order for each block
+        # to tell a shifted block from a plate with an empty last row.
+        wrong = next(((i, lab) for i, lab in enumerate(_grid_row_labels(nrows))
+                      if first(b + 11 + i) != lab), None)
+        if wrong is not None:
+            i, lab = wrong
+            got = first(b + 11 + i)
+            problems.append(f"line {b + 12 + i}: expected row {lab} of the grid that starts on line {b + 12}, "
+                            f"found {got!r}" + (" (blank line)." if blank(b + 11 + i) else "."))
+            continue
         last = b + 11 + nrows - 1
-        if not _GRID_ROW.match(first(last)):
-            continue  # grid size problems are reported by check_envision_csv
         if not blank(last + 1):
             problems.append(f"line {last + 2}: expected a blank line after the results grid that starts on line "
                             f"{b + 12}.")
