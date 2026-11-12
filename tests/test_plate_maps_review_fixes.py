@@ -594,3 +594,14 @@ def test_step_2_warns_only_about_envision_block_order(tmp_path, caplog):
     with caplog.at_level('WARNING'):
         assert pm._warn_if_envision_blocks_out_of_order(str(tmp_path / 'results_first.csv'))
     assert 'ordered wrong' in caplog.text and 're-export' in caplog.text and 'tidy step' in caplog.text
+
+
+def test_write_to_a_locked_file_says_to_close_it(tmp_path, monkeypatch):
+    import shutil
+    def locked(*a, **k):
+        raise PermissionError(13, 'Permission denied')
+    monkeypatch.setattr(shutil, 'copyfile', locked)
+    src = tmp_path / 'raw.csv'
+    src.write_text('x\n')
+    with pytest.raises(PermissionError, match='open in another program.*Close it'):
+        pm._copy_file(str(src), str(tmp_path / 'copy.csv'))

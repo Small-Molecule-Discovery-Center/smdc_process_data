@@ -913,6 +913,13 @@ def _wells_per_read(csv_path, plate_type='384'):
     return [int(parsed[c].notna().sum()) for c in meas]
 
 
+def file_in_use_message(path):
+    """Message for a PermissionError on writing path: usually the file is
+    open in another program (Excel, a text editor) that locks it."""
+    return (f"Can't write {path}: it is open in another program (Excel, a text editor, Pipeline Pilot) or you "
+            "don't have write permission there. Close it everywhere else and run this cell again.")
+
+
 def _envision_section_kind(row):
     """'plate', 'background' or 'results' if this CSV row starts that kind of
     EnVision section, else None."""
@@ -1075,9 +1082,12 @@ def tidy_envision_files(paths, ncols: int = None) -> pd.DataFrame:
     for p in csvs:
         width = ncols or _envision_ncols(p)
         plate_type = {13: '96', 25: '384', 49: '1536'}.get(width)
-        _, trimmed = trim_csv_columns_in_file(p, width)
-        _, arranged = arrange_envision_blocks_in_file(p)
-        _, zblocks = fill_zprime_blocks_in_file(p)
+        try:
+            _, trimmed = trim_csv_columns_in_file(p, width)
+            _, arranged = arrange_envision_blocks_in_file(p)
+            _, zblocks = fill_zprime_blocks_in_file(p)
+        except PermissionError as e:
+            raise PermissionError(file_in_use_message(p)) from e
         counts = _wells_per_read(p, plate_type or '384')
         problems = check_envision_csv(p, plate_type)
         rows.append({'file': p, 'rows trimmed': trimmed, 'blocks re-arranged': arranged,

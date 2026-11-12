@@ -352,3 +352,13 @@ def test_arrange_warns_when_row_a_cannot_reach_line_12(tmp_path, caplog):
     with caplog.at_level('WARNING', logger='raw_data_parsers'):
         _arrange(tmp_path, _tidy_layout(b))
     assert 'too many rows to put row A on line 12' in caplog.text
+
+
+def test_tidy_says_to_close_a_locked_file(tmp_path, monkeypatch):
+    f = tmp_path / 'locked.csv'
+    f.write_text('A,1\n')
+    def locked(*a, **k):
+        raise PermissionError(13, 'Permission denied')
+    monkeypatch.setattr(raw_data_parsers, 'trim_csv_columns_in_file', locked)
+    with pytest.raises(PermissionError, match='locked.csv: it is open in another program'):
+        raw_data_parsers.tidy_envision_files([str(f)])
