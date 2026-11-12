@@ -2397,7 +2397,22 @@ def _expected_smdc_id(cell):
     return float(m.group(1)) if m else np.nan
 
 
-def check_dr_plates(info, draw=True):
+def _plates_to_draw(draw, n_plates):
+    """How many plates check_dr_plates draws: an int, 'all', or True (= all)."""
+    if draw is True or (isinstance(draw, str) and draw.strip().lower() == 'all'):
+        return n_plates
+    if draw is None or draw is False:
+        return 0
+    try:
+        n = int(draw)
+    except (TypeError, ValueError):
+        raise ValueError(f"draw must be a number of plates or 'all', not {draw!r}") from None
+    if n < 0:
+        raise ValueError(f"draw must be 0 or more, not {n}")
+    return min(n, n_plates)
+
+
+def check_dr_plates(info, draw=1):
     """Check each *_DR_plate.xlsx step 2 wrote against the user's input map.
 
     For every destination plate, the SMDC ID in each well of the DR file is
@@ -2407,8 +2422,10 @@ def check_dr_plates(info, draw=True):
 
     Args:
         info (DataFrame): what make_dr_platemaps_and_folders returned.
-        draw (bool): also draw each DR file as a plate heatmap of SMDC IDs and
-            one of concentrations, to compare by eye with the input tab.
+        draw (int or 'all'): how many DR files to draw (layout with controls,
+            plus concentrations), to compare by eye with the input tab.
+            1 (default) draws the first plate, 'all' draws every plate,
+            0 or None draws none. True means 'all'.
     Returns:
         (summary, mismatches): summary has one row per plate (compound wells
         in the input, compound wells in the DR file, mismatched wells, wells
@@ -2420,9 +2437,10 @@ def check_dr_plates(info, draw=True):
     if dr_plates is None or infile is None:
         raise ValueError("info has no record of its DR plate files. Pass the DataFrame that "
                          "make_dr_platemaps_and_folders returned (with dose_response=True).")
+    n_draw = _plates_to_draw(draw, len(dr_plates))
     dp, _ = _read_info_sheet(infile)
     rows, bad = [], []
-    for grid_num, path in dr_plates:
+    for i, (grid_num, path) in enumerate(dr_plates):
         dr = pd.read_excel(path)
         want = read_platemap_block(plate_map=dp[grid_num[0:31]], block=0, value_name='Input')
         want['Destination well'] = want.row + want.col
@@ -2443,15 +2461,17 @@ def check_dr_plates(info, draw=True):
                                 if 'Source plate' in dr else len(compounds)),
             'no conc': (int(compounds['[compound] uM'].isna().sum())
                         if '[compound] uM' in dr else len(compounds)),
-        'positive control wells': int(dr['Sci_PosControl'].astype(bool).sum()) if 'Sci_PosControl' in dr else 0,
-        'negative control wells': int(dr['Sci_NegControl'].astype(bool).sum()) if 'Sci_NegControl' in dr else 0,
+            'positive control wells': int(dr['Sci_PosControl'].astype(bool).sum()) if 'Sci_PosControl' in dr else 0,
+            'negative control wells': int(dr['Sci_NegControl'].astype(bool).sum()) if 'Sci_NegControl' in dr else 0,
             'file': path,
         })
-        if draw:
+        if i < n_draw:
             _draw_dr_layout(grid_num, dr)
             if '[compound] uM' in dr and dr['[compound] uM'].notna().any():
                 draw_plate_heatmap(barcode=grid_num, df=dr, wells='Destination well',
                                    values='[compound] uM', labels='[compound] uM', plate_size=384)
+    if 0 < n_draw < len(dr_plates):
+        logger.warning(f"Drew {n_draw} of {len(dr_plates)} DR plates. Use draw='all' to draw every plate.")
     summary = pd.DataFrame(rows)
     mismatches = pd.concat(bad, ignore_index=True) if bad else pd.DataFrame()
     n = int(summary['mismatched wells'].sum()) if len(summary) else 0
