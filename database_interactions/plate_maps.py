@@ -419,18 +419,21 @@ def draw_plate_heatmap(barcode='OTPARP1234-Eco1', df=None, wells='Well', values=
     if cbar_override is not None:
         cbar = cbar_override
 
-    if cbar:
-        fig, (ax, cax) = plt.subplots(1, 2, figsize=(width, width / 3), gridspec_kw={"width_ratios": [1, .01]})
-    else:
-        fig, ax = plt.subplots(1, figsize=(width, width / 3))
-        cax = None
-    sns.heatmap(pl, annot=plabels, fmt='s', linewidth=1, linecolor='white', ax=ax, cbar_ax=cax, cbar=cbar,
+    # Always reserve the colourbar column, hidden when there is no colourbar,
+    # so every plate drawn at the same width lines up well for well (e.g. the
+    # layout and concentration maps of one DR plate, drawn one above the other).
+    fig, (ax, cax) = plt.subplots(1, 2, figsize=(width, width / 3), gridspec_kw={"width_ratios": [1, .01]})
+    if not cbar:
+        cax.set_visible(False)
+    sns.heatmap(pl, annot=plabels, fmt='s', linewidth=1, linecolor='white', ax=ax, cbar_ax=cax if cbar else None, cbar=cbar,
                 center=center, vmin=vmin, vmax=vmax, cmap=cmap,
                 annot_kws={"size": 7}
                 )
     ax.grid(which='major')
     ax.set_title(f"{barcode} {values}");
-    plt.tight_layout()
+    # Fixed margins rather than tight_layout, which would size the plate
+    # differently with and without colourbar tick labels.
+    fig.subplots_adjust(left=0.04, right=0.95, bottom=0.1, top=0.92, wspace=0.02)
     if outdir is not None:
         if not os.path.exists(outdir):
             os.makedirs(outdir)
