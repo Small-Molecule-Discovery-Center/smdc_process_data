@@ -150,7 +150,7 @@ def test_tidy_envision_files_touches_only_the_files_given(tmp_path):
     assert len(lines[0].split(',')) == 25 and lines[1] == ''      # trimmed, blank line kept
     assert len(other.read_text().split(',')) == 27                # not listed: untouched
     again = raw_data_parsers.tidy_envision_files(str(wide))
-    assert again.iloc[0, 1:4].sum() == 0                          # already tidy
+    assert again[['rows trimmed', "Z' blocks filled"]].iloc[0].sum() == 0   # already tidy
 
 
 def test_tidy_envision_files_names_missing_files(tmp_path):
@@ -170,11 +170,11 @@ def test_tidy_flags_reads_with_different_well_counts(tmp_path, monkeypatch):
 
 def _envision_text(stray=False):
     head = ',' + ','.join(f'{c:02d}' for c in range(1, 13))
-    lines = ['Plate information ,', 'Plate,Repeat,Barcode,Measurement date', '1,1,,6/11/2026', '',
-             'Background information', 'Plate,Label,Result', '1,x,0', '', 'Results for ch1', head]
+    lines = ['Plate information ,' + (',,,,9' if stray else ''), 'Plate,Repeat,Barcode,Measurement date',
+             '1,1,,6/11/2026', '', 'Background information', 'Plate,Label,Result', '1,x,0', '1,y,0', '',
+             'Results for ch1', head]
     lines += [','.join([r] + ['5'] * 12) for r in 'ABCDEFGH']
-    lines += ['', 'Plate information ,' + (',,,,9' if stray else ''), 'Plate,Repeat,Barcode,Measurement date',
-              '1,1,,6/11/2026', '', 'Basic assay information ,', 'Assay ID: ,,,,4310']
+    lines += ['', '', 'Basic assay information ,', 'Assay ID: ,,,,4310']
     return '\n'.join(lines) + '\n'
 
 
@@ -185,7 +185,7 @@ def test_check_envision_csv_finds_pasted_values(tmp_path, monkeypatch):
     bad.write_text(_envision_text(stray=True))
     assert raw_data_parsers.check_envision_csv(str(good)) == []
     problems = raw_data_parsers.check_envision_csv(str(bad))
-    assert len(problems) == 1 and problems[0].startswith('line 20 (Plate information)')
+    assert len(problems) == 1 and problems[0].startswith('line 1 (Plate information)')
 
 
 def test_check_envision_csv_flags_reads_with_different_wells(tmp_path, monkeypatch):
@@ -193,3 +193,17 @@ def test_check_envision_csv_flags_reads_with_different_wells(tmp_path, monkeypat
     f = tmp_path / 'f.csv'
     f.write_text(_envision_text())
     assert 'different numbers of wells (253/265/253)' in raw_data_parsers.check_envision_csv(str(f))[0]
+
+
+def test_block_layout_puts_row_a_on_line_12():
+    header = [''] + [f'{c:02d}' for c in range(1, 25)]
+    block = [['Plate information'], ['Plate', 'Repeat'], ['1', '1'], [],
+             ['Background information'], ['Plate', 'Label'], ['1', 'x'], ['1', 'y'], [],
+             ['Results for ch1'], header] + [[r] + ['1'] * 24 for r in 'ABCDEFGHIJKLMNOP'] + [[]]
+    assert raw_data_parsers._block_layout_problems(block + block) == []
+    no_gap = block[:3] + block[4:]                                     # blank after Plate information missing
+    assert 'row A is on line 11' in raw_data_parsers._block_layout_problems(no_gap)[0]
+    calc = block[:9] + [['Calculated results: Calc 1']] + block[10:]   # 'Calculated results' title is fine too
+    assert raw_data_parsers._block_layout_problems(calc) == []
+    results_first = block[9:] + block[:9]
+    assert 'comes before any Plate information' in raw_data_parsers._block_layout_problems(results_first)[0]
