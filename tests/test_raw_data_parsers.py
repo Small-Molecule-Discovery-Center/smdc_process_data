@@ -235,3 +235,18 @@ def test_single_background_row_is_padded_so_row_a_is_line_12(tmp_path):
     assert raw_data_parsers.pad_single_background_row_in_file(str(f)) == (True, 2)
     assert raw_data_parsers._block_layout_problems(list(csv.reader(open(f, newline='')))) == []
     assert raw_data_parsers.pad_single_background_row_in_file(str(f)) == (False, 0)   # only once
+
+
+@pytest.mark.parametrize('nrows, ncols, last', [(8, 12, 'H'), (16, 24, 'P'), (32, 48, 'AF')])
+def test_block_layout_checks_row_letters_for_96_384_and_1536(nrows, ncols, last):
+    labels = raw_data_parsers._grid_row_labels(nrows)
+    assert labels[0] == 'A' and labels[-1] == last and len(set(labels)) == nrows
+    header = [''] + [str(c) for c in range(1, ncols + 1)]
+    top = [['Plate information'], ['Plate', 'Repeat'], ['1', '1'], [],
+           ['Background information'], ['Plate', 'Label'], ['1', 'x'], ['1', 'y'], [],
+           ['Results for ch1'], header]
+    ok = top + [[r] + ['1'] * ncols for r in labels[:-1]] + [[labels[-1]] + [''] * ncols] + [[]]
+    assert raw_data_parsers._block_layout_problems(ok + ok, nrows) == []
+    shifted = top + [[]] + [[r] + ['1'] * ncols for r in labels] + [[]]   # extra blank line: grid starts a line late
+    problems = raw_data_parsers._block_layout_problems(ok + shifted, nrows)
+    assert len(problems) == 1 and problems[0].startswith(f"line {len(ok) + 1} (block starting here)")
