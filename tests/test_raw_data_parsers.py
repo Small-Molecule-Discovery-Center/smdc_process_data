@@ -250,3 +250,15 @@ def test_block_layout_checks_row_letters_for_96_384_and_1536(nrows, ncols, last)
     shifted = top + [[]] + [[r] + ['1'] * ncols for r in labels] + [[]]   # extra blank line: grid starts a line late
     problems = raw_data_parsers._block_layout_problems(ok + shifted, nrows)
     assert len(problems) == 1 and problems[0].startswith(f"line {len(ok) + 1} (block starting here)")
+
+
+def test_block_layout_flags_grid_rows_pipeline_pilot_would_drop():
+    header = [''] + [f'{c:02d}' for c in range(1, 25)]
+    top = [['Plate information'], ['Plate', 'Repeat'], ['1', '1'], [],
+           ['Background information'], ['Plate', 'Label'], ['1', 'x'], ['1', 'y'], [],
+           ['Results for ch1'], header]
+    rows = [[r] + ['1.5', '-2', ''] + ['3'] * 21 for r in 'ABCDEFGHIJKLMNOP']
+    assert raw_data_parsers._block_layout_problems(top + rows + [[]]) == []
+    rows[4][3] = '1.2E+05'
+    problems = raw_data_parsers._block_layout_problems(top + rows + [[]])
+    assert len(problems) == 1 and 'row E' in problems[0] and 'shifts the rows below' in problems[0]
