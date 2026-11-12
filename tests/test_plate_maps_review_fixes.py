@@ -526,3 +526,15 @@ def test_concentrations_that_print_the_same_become_equal():
     dids = pd.DataFrame({'[compound] uM': [83.33333333333333, 83.3333333333333, 250.0, np.nan, 0.03810394]})
     out = pm._round_concentrations(dids)['[compound] uM']
     assert out[0] == out[1] and out[2] == 250.0 and np.isnan(out[3]) and out[4] == 0.03810394
+
+
+def test_old_or_future_screen_dates_are_flagged(caplog):
+    info = pd.DataFrame({'Grid_num': ['P1', 'P2', 'P3', 'P4'], 'Raw_assay_ID': [2875, 2974, 2974, 3001],
+                         'Assay_name': ['a', 'b', 'b', 'c'],
+                         'Date_of_screen': [20240605, 20240611, 20240611, 20261101]})
+    with caplog.at_level('WARNING'):
+        flagged = pm.check_screen_dates(info, today='2026-11-12')
+    assert flagged.Grid_num.tolist() == ['P1', 'P2', 'P3']               # 3001 is 11 days old: fine
+    assert '2 assay version(s)' in caplog.text and 'plates P2, P3' in caplog.text
+    assert 'historical data' in caplog.text
+    assert pm.check_screen_dates(info.assign(Date_of_screen=20261201), today='2026-11-12').shape[0] == 4  # future
