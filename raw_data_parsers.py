@@ -905,10 +905,15 @@ def _wells_per_read(csv_path, plate_type='384'):
     return [int(parsed[c].notna().sum()) for c in meas]
 
 
-def tidy_envision_files(paths, ncols: int = 25, required_empty_lines: int = 3) -> pd.DataFrame:
-    """Tidy the given EnVision CSVs in place: trim extra columns, put
-    required_empty_lines blank lines above each calculated-results block, and
-    fill empty Z' blocks.
+def tidy_envision_files(paths, ncols: int = 25) -> pd.DataFrame:
+    """Tidy the given EnVision CSVs in place and check what can't be tidied.
+
+    Fixes: trims extra columns a user added after the plate (ncols = row
+    label + 24), and fills empty Z' blocks. Checks (reported, not fixed): the
+    block layout (row A on line 12 counting each block's 'Plate information'
+    line as 1, i.e. Plate and Background information first, one blank line
+    between blocks), values pasted outside the grid, and reads covering
+    different numbers of wells. See check_envision_csv.
 
     Meant for the raw files make_dr_platemaps_and_folders copied into the
     toload folders (plate_maps.raw_files(info)), so only the files that will
@@ -916,8 +921,8 @@ def tidy_envision_files(paths, ncols: int = 25, required_empty_lines: int = 3) -
     Non-CSV paths (e.g. .rpt) are skipped.
 
     Returns:
-        DataFrame with one row per CSV: rows trimmed, blank lines inserted and
-        Z' blocks filled (all 0 = the file was already tidy).
+        DataFrame with one row per CSV: rows trimmed and Z' blocks filled (0 =
+        nothing to fix), wells per read, and problems (empty = compliant).
     """
     paths = [str(p) for p in ([paths] if isinstance(paths, (str, os.PathLike)) else paths)]
     missing = [p for p in paths if not os.path.isfile(p)]
@@ -928,20 +933,18 @@ def tidy_envision_files(paths, ncols: int = 25, required_empty_lines: int = 3) -
     rows = []
     for p in csvs:
         _, trimmed = trim_csv_columns_in_file(p, ncols)
-        _, inserted = ensure_calc_spacing_in_file(p, required_empty_lines)
         _, zblocks = fill_zprime_blocks_in_file(p)
         counts = _wells_per_read(p)
         problems = check_envision_csv(p)
-        rows.append({'file': p, 'rows trimmed': trimmed, 'blank lines inserted': inserted,
-                     "Z' blocks filled": zblocks, 'wells per read': '/'.join(map(str, counts)),
-                     'reads differ': len(set(counts)) > 1, 'problems': '; '.join(problems)})
-    cols = ['file', 'rows trimmed', 'blank lines inserted', "Z' blocks filled", 'wells per read', 'reads differ',
-            'problems']
+        rows.append({'file': p, 'rows trimmed': trimmed, "Z' blocks filled": zblocks,
+                     'wells per read': '/'.join(map(str, counts)), 'reads differ': len(set(counts)) > 1,
+                     'problems': '; '.join(problems)})
+    cols = ['file', 'rows trimmed', "Z' blocks filled", 'wells per read', 'reads differ', 'problems']
     out = pd.DataFrame(rows, columns=cols)
-    changed = int((out.iloc[:, 1:4].sum(axis=1) > 0).sum()) if len(out) else 0
+    changed = int((out[['rows trimmed', "Z' blocks filled"]].sum(axis=1) > 0).sum()) if len(out) else 0
     for _, r in out[out['problems'] != ''].iterrows():
         logger.warning(f"{r['file']} doesn't look like an untouched EnVision export, and tidying can't fix it: "
-                       f"{r['problems']}. Remove the stray values by hand (leave missing wells blank, not 0).")
+                       f"{r['problems']}. Fix it by hand (leave missing wells blank, not 0).")
     note = f" (skipped {skipped} non-CSV file(s))" if skipped else ""
     if not csvs:
         logger.warning(f"No CSV files to tidy{note}.")
@@ -953,6 +956,58 @@ def tidy_envision_files(paths, ncols: int = 25, required_empty_lines: int = 3) -
 
 
 _GRID_ROW = re.compile(r'^[A-Z]{1,2}$')
+
+
+def _block_layout_problems(lines, nrows=16):
+    """Check each data block's layout, counting its 'Plate information' line as 1:
+
+        1  Plate information          7-8  background rows
+        2  header row                 9    blank
+        3  plate row                  10   Calculated results... / Results for...
+        4  blank                      11   column numbers
+        5  Background information     12   row A
+        6  header row                 ...  then a blank line after the last row
+
+    i.e. Plate information and Background information are exported before
+    the results, with one blank line between blocks. Returns a list of problems.
+    """
+    def blank(i):
+        return i >= len(lines) or not any(str(v).strip() for v in lines[i])
+
+    def first(i):
+        return str(lines[i][0]).strip() if i < len(lines) and lines[i] else ''
+
+    problems = []
+    starts = [i for i in range(len(lines)) if first(i).startswith('Plate information')]
+    stop = next((i for i in range(len(lines)) if first(i).startswith('Basic assay information')), len(lines))
+    results = [i for i in range(stop) if first(i).startswith(('Calculated results', 'Results for'))]
+    if results and (not starts or results[0] < starts[0]):
+        problems.append(f"line {results[0] + 1}: a results block comes before any Plate information. Export with "
+                        "Plate information and Background information placed before the results.")
+    for b in starts:
+        n = b + 1  # 1-based line number of this block's Plate information
+        expect = [(1, lambda i: first(i).startswith('Plate'), "the Plate information header row"),
+                  (3, blank, "a blank line"),
+                  (4, lambda i: first(i).startswith('Background information'), "'Background information'"),
+                  (8, blank, "a blank line"),
+                  (9, lambda i: first(i).startswith(('Calculated results', 'Results')), "the results title"),
+                  (11, lambda i: first(i) == 'A', "row A")]
+        bad = [(off, what) for off, test, what in expect if not test(b + off)]
+        if bad:
+            off, what = bad[0]
+            a_row = next((i for i in range(b + 1, min(stop, b + 40)) if first(i) == 'A'), None)
+            where = f"row A is on line {a_row - b + 1} of the block" if a_row is not None else "no row A found"
+            problems.append(f"line {n} (block starting here): expected {what} on line {off + 1} of the block, "
+                            f"so row A lands on line 12 ({where}). Plate information and Background "
+                            "information must come first, each followed by one blank line.")
+            continue
+        last = b + 11 + nrows - 1
+        if not _GRID_ROW.match(first(last)):
+            continue  # grid size problems are reported by check_envision_csv
+        if not blank(last + 1):
+            problems.append(f"line {last + 2}: expected a blank line after the results grid that starts on line "
+                            f"{b + 12}.")
+    return problems
 
 
 def check_envision_csv(csv_path: str, plate_type: str = None, max_problems: int = 10) -> list:
@@ -1022,6 +1077,7 @@ def check_envision_csv(csv_path: str, plate_type: str = None, max_problems: int 
             problems.append('... more problems not listed')
             return problems
 
+    problems += _block_layout_problems(lines, nrows)
     counts = _wells_per_read(csv_path, plate_type)
     if len(set(counts)) > 1:
         problems.append(f"reads have data in different numbers of wells ({'/'.join(map(str, counts))}); "
