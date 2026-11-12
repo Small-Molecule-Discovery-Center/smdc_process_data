@@ -1,3 +1,4 @@
+import csv
 import pytest
 """Regression checks for the reusable EnVision reader helpers."""
 
@@ -150,7 +151,7 @@ def test_tidy_envision_files_touches_only_the_files_given(tmp_path):
     assert len(lines[0].split(',')) == 25 and lines[1] == ''      # trimmed, blank line kept
     assert len(other.read_text().split(',')) == 27                # not listed: untouched
     again = raw_data_parsers.tidy_envision_files(str(wide))
-    assert again[['rows trimmed', "Z' blocks filled"]].iloc[0].sum() == 0   # already tidy
+    assert again[['rows trimmed', 'background rows padded', "Z' blocks filled"]].iloc[0].sum() == 0  # tidy
 
 
 def test_tidy_envision_files_names_missing_files(tmp_path):
@@ -207,3 +208,16 @@ def test_block_layout_puts_row_a_on_line_12():
     assert raw_data_parsers._block_layout_problems(calc) == []
     results_first = block[9:] + block[:9]
     assert 'comes before any Plate information' in raw_data_parsers._block_layout_problems(results_first)[0]
+
+
+def test_single_background_row_is_padded_so_row_a_is_line_12(tmp_path):
+    header = ',' + ','.join(f'{c:02d}' for c in range(1, 25))
+    block = (['Plate information', 'Plate,Repeat', '1,1', '', 'Background information', 'Plate,Label', '1,x', '',
+              'Results for ch1', header] + [','.join([r] + ['1'] * 24) for r in 'ABCDEFGHIJKLMNOP'] + [''])
+    f = tmp_path / 'one_label.csv'
+    f.write_text('\n'.join(block + block) + '\n')
+    lines = list(csv.reader(open(f, newline='')))
+    assert 'tidy cell adds the missing blank line' in raw_data_parsers._block_layout_problems(lines)[0]
+    assert raw_data_parsers.pad_single_background_row_in_file(str(f)) == (True, 2)
+    assert raw_data_parsers._block_layout_problems(list(csv.reader(open(f, newline='')))) == []
+    assert raw_data_parsers.pad_single_background_row_in_file(str(f)) == (False, 0)   # only once

@@ -905,11 +905,51 @@ def _wells_per_read(csv_path, plate_type='384'):
     return [int(parsed[c].notna().sum()) for c in meas]
 
 
+def pad_single_background_row_in_file(csv_path: str) -> Tuple[bool, int]:
+    """Where a block's Background information has one data row instead of
+    two, add a blank line after it so row A of the results grid is on line 12
+    of the block, as for two-row exports. Edits in place only when needed.
+
+    Returns:
+        (changed, blocks_padded)
+    """
+    with open(csv_path, newline='') as f:
+        text = f.read()
+    newline = '\r\n' if '\r\n' in text else '\n'
+    rows = list(csv.reader(text.splitlines()))
+
+    def blank(i):
+        return i >= len(rows) or not any(str(v).strip() for v in rows[i])
+
+    def first(i):
+        return str(rows[i][0]).strip() if i < len(rows) and rows[i] else ''
+
+    padded, out, i = 0, [], 0
+    while i < len(rows):
+        out.append(rows[i])
+        # Background information, header, ONE row, blank, results title
+        if (first(i).startswith('Background information') and not blank(i + 2) and blank(i + 3)
+                and first(i + 4).startswith(('Calculated results', 'Results'))):
+            out += rows[i + 1:i + 4]
+            out.append([''] * max(1, len(rows[i + 3])))
+            padded += 1
+            i += 4
+            continue
+        i += 1
+    if not padded:
+        return (False, 0)
+    with open(csv_path, 'w', newline='') as f:
+        csv.writer(f, lineterminator=newline).writerows(out)
+    logger.info(f"Added a blank line after the single Background information row in {padded} block(s) of {csv_path}")
+    return (True, padded)
+
+
 def tidy_envision_files(paths, ncols: int = 25) -> pd.DataFrame:
     """Tidy the given EnVision CSVs in place and check what can't be tidied.
 
     Fixes: trims extra columns a user added after the plate (ncols = row
-    label + 24), and fills empty Z' blocks. Checks (reported, not fixed): the
+    label + 24), adds a blank line after a single Background information row
+    (so row A is on line 12, as with two rows), and fills empty Z' blocks. Checks (reported, not fixed): the
     block layout (row A on line 12 counting each block's 'Plate information'
     line as 1, i.e. Plate and Background information first, one blank line
     between blocks), values pasted outside the grid, and reads covering
@@ -933,15 +973,19 @@ def tidy_envision_files(paths, ncols: int = 25) -> pd.DataFrame:
     rows = []
     for p in csvs:
         _, trimmed = trim_csv_columns_in_file(p, ncols)
+        _, bg_padded = pad_single_background_row_in_file(p)
         _, zblocks = fill_zprime_blocks_in_file(p)
         counts = _wells_per_read(p)
         problems = check_envision_csv(p)
-        rows.append({'file': p, 'rows trimmed': trimmed, "Z' blocks filled": zblocks,
+        rows.append({'file': p, 'rows trimmed': trimmed, 'background rows padded': bg_padded,
+                     "Z' blocks filled": zblocks,
                      'wells per read': '/'.join(map(str, counts)), 'reads differ': len(set(counts)) > 1,
                      'problems': '; '.join(problems)})
-    cols = ['file', 'rows trimmed', "Z' blocks filled", 'wells per read', 'reads differ', 'problems']
+    cols = ['file', 'rows trimmed', 'background rows padded', "Z' blocks filled", 'wells per read',
+            'reads differ', 'problems']
     out = pd.DataFrame(rows, columns=cols)
-    changed = int((out[['rows trimmed', "Z' blocks filled"]].sum(axis=1) > 0).sum()) if len(out) else 0
+    fixed = ['rows trimmed', 'background rows padded', "Z' blocks filled"]
+    changed = int((out[fixed].sum(axis=1) > 0).sum()) if len(out) else 0
     for _, r in out[out['problems'] != ''].iterrows():
         logger.warning(f"{r['file']} doesn't look like an untouched EnVision export, and tidying can't fix it: "
                        f"{r['problems']}. Fix it by hand (leave missing wells blank, not 0).")
@@ -997,9 +1041,13 @@ def _block_layout_problems(lines, nrows=16):
             off, what = bad[0]
             a_row = next((i for i in range(b + 1, min(stop, b + 40)) if first(i) == 'A'), None)
             where = f"row A is on line {a_row - b + 1} of the block" if a_row is not None else "no row A found"
+            single_bg = (first(b + 4).startswith('Background information') and not blank(b + 6)
+                         and blank(b + 7) and first(b + 8).startswith(('Calculated results', 'Results')))
+            hint = (" The Background information has one row: the tidy cell adds the missing blank line."
+                    if single_bg else " Plate information and Background information must come first, "
+                    "each followed by one blank line.")
             problems.append(f"line {n} (block starting here): expected {what} on line {off + 1} of the block, "
-                            f"so row A lands on line 12 ({where}). Plate information and Background "
-                            "information must come first, each followed by one blank line.")
+                            f"so row A lands on line 12 ({where}).{hint}")
             continue
         last = b + 11 + nrows - 1
         if not _GRID_ROW.match(first(last)):
