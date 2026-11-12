@@ -332,3 +332,23 @@ def test_tidy_keeps_all_48_columns_of_a_1536_grid(tmp_path):
     out = raw_data_parsers.tidy_envision_files([str(f)])
     assert out['rows trimmed'].tolist() == [0] and out['problems'].tolist() == ['']
     assert f.read_text().split('\n')[:-1] == lines
+
+
+def test_arrange_always_puts_row_a_on_line_12(tmp_path):
+    b = _block('1')
+    short_plate = dict(b, plate=b['plate'][:2])                    # plate section one row short
+    no_bg_rows = dict(b, background=b['background'][:2])           # header only, no background rows
+    two_line_title = dict(b, background=b['background'][:3],      # one background row and an extra
+                          results=b['results'][:1] + ['Calc note'] + b['results'][1:])  # line above the grid
+    for blk in (short_plate, no_bg_rows, two_line_title):
+        (changed, _), out = _arrange(tmp_path, _tidy_layout(blk, _block('2')))
+        rows = list(csv.reader(out))
+        starts = [i for i, r in enumerate(rows) if r and r[0] == 'Plate information']
+        assert [rows[s + 11][0] for s in starts] == ['A', 'A']
+
+
+def test_arrange_warns_when_row_a_cannot_reach_line_12(tmp_path, caplog):
+    b = _block('1', bg_rows=('1,x', '1,y', '1,z'))
+    with caplog.at_level('WARNING', logger='raw_data_parsers'):
+        _arrange(tmp_path, _tidy_layout(b))
+    assert 'too many rows to put row A on line 12' in caplog.text
