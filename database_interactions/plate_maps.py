@@ -1222,6 +1222,24 @@ def share_path(path, share_root=None, what='path'):
 
 
 
+class _FileInUse:
+    """with _FileInUse(path): ... turns a PermissionError while writing path
+    into one that says to close the file in Excel (or wherever it is open)."""
+    def __init__(self, path):
+        self.path = path
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, kind, err, tb):
+        if kind is not None and issubclass(kind, PermissionError):
+            raise PermissionError(
+                f"Can't write {self.path}: it is open in another program (Excel, a text editor, Pipeline Pilot) "
+                "or you don't have write permission there. Close it everywhere else and run this cell again."
+            ) from err
+        return False
+
+
 def _copy_file(src, dst):
     """Copy a file's contents, then its timestamps if the filesystem allows it.
 
@@ -1230,7 +1248,8 @@ def _copy_file(src, dst):
     setting the modification time is refused. Keep the copy and log a
     warning instead of stopping the run.
     """
-    shutil.copyfile(src, dst)
+    with _FileInUse(dst):
+        shutil.copyfile(src, dst)
     try:
         shutil.copystat(src, dst)
     except OSError as e:
@@ -2278,7 +2297,8 @@ def make_dr_platemaps_and_folders(infile='', users=[("Amanda", "Paulson")], base
                     dids = _apply_control_flags_from_map(dids, dp, plate_row, control_dict)
 
                     dr_path = os.path.join(outdir, f'{grid_num}_DR_plate.xlsx')
-                    dids.to_excel(dr_path, index=False)
+                    with _FileInUse(dr_path):
+                        dids.to_excel(dr_path, index=False)
                     dr_plates.append((grid_num, dr_path))
                 row.Grid_num = ';'.join(gridnum.grid_num)
 
@@ -2703,7 +2723,8 @@ def _append_grid_num(outdir, gridnum):
     else:
         gn = gridnum
     gn['grid_num'] = [str(x)[0:50] for x in gn['grid_num']]  # HiTS barcode field caps at 50
-    gn.to_csv(path, index=False)
+    with _FileInUse(path):
+        gn.to_csv(path, index=False)
     return gn
 
 
@@ -2855,7 +2876,8 @@ def remove_duplicate_source_plates(dups, keep=None, write=False):
         changes[plate] = (before, len(t))
         logger.info(f"{plate}: {before} -> {len(t)} rows")
         if write:
-            t.to_excel(plate, index=False)
+            with _FileInUse(plate):
+                t.to_excel(plate, index=False)
     if not write:
         logger.info("Dry run: pass write=True to save.")
     return changes
@@ -2883,7 +2905,8 @@ def fill_control_lots(outdir, assay_ids, control_lots, write=False):
         paths.append(path)
         logger.info(path)
         if write:
-            t.to_excel(path, index=False)
+            with _FileInUse(path):
+                t.to_excel(path, index=False)
     if not write:
         logger.info("Dry run: pass write=True to save.")
     return paths
