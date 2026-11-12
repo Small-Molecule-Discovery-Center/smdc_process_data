@@ -210,6 +210,20 @@ def test_block_layout_puts_row_a_on_line_12():
     assert 'comes before any Plate information' in raw_data_parsers._block_layout_problems(results_first)[0]
 
 
+def test_block_layout_tells_blank_row_p_from_a_missing_row_in_any_block():
+    header = [''] + [f'{c:02d}' for c in range(1, 25)]
+    top = [['Plate information'], ['Plate', 'Repeat'], ['1', '1'], [],
+           ['Background information'], ['Plate', 'Label'], ['1', 'x'], ['1', 'y'], [],
+           ['Results for ch1'], header]
+    full = top + [[r] + ['1'] * 24 for r in 'ABCDEFGHIJKLMNOP'] + [[]]
+    blank_p = top + [[r] + ['1'] * 24 for r in 'ABCDEFGHIJKLMNO'] + [['P'] + [''] * 24] + [[]]
+    assert raw_data_parsers._block_layout_problems(full + blank_p) == []     # empty row P is a real row
+    missing_c = top + [[r] + ['1'] * 24 for r in 'ABDEFGHIJKLMNOP'] + [[], []]
+    problems = raw_data_parsers._block_layout_problems(full + missing_c)  # second block only
+    assert len(problems) == 1 and "expected row C" in problems[0] and "found 'D'" in problems[0]
+    assert problems[0].startswith(f"line {len(full) + 14}:")
+
+
 def test_single_background_row_is_padded_so_row_a_is_line_12(tmp_path):
     header = ',' + ','.join(f'{c:02d}' for c in range(1, 25))
     block = (['Plate information', 'Plate,Repeat', '1,1', '', 'Background information', 'Plate,Label', '1,x', '',
