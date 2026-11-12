@@ -2307,7 +2307,7 @@ def make_dr_platemaps_and_folders(infile='', users=[("Amanda", "Paulson")], base
             _copy_file(origfile, outfile)
             if outfile not in raw_files:
                 raw_files.append(outfile)
-            _warn_if_not_envision_compliant(outfile)
+            _warn_if_envision_blocks_out_of_order(outfile)
             elapsed = time.time() - starttime
             logger.info(f'Done copying in {humanize.precisedelta(elapsed, minimum_unit="seconds", format="%d")}')
     # The toload_<i>/<date> folders this run wrote to, so later steps (the
@@ -2335,29 +2335,37 @@ def load_folders(info):
     return list(folders)
 
 
-def _warn_if_not_envision_compliant(path):
-    """Log a warning naming the problem lines if a copied raw CSV looks hand-edited
-    in a way the Pipeline Pilot EnVision reader rejects (see
-    raw_data_parsers.check_envision_csv). Non-CSV files and files that are not
-    EnVision exports (no 'Plate information' section) are skipped."""
+def _warn_if_envision_blocks_out_of_order(path):
+    """Warn if a copied raw CSV's blocks aren't laid out as Plate information,
+    Background information, then results with row A on line 12 of each block
+    (raw_data_parsers._block_layout_problems). Best fixed by re-exporting from
+    EnVision; otherwise the tidy step re-arranges the copy. Other problems
+    (hand-pasted values, reads that differ) are reported by the tidy step.
+    Non-CSV files and files with no 'Plate information' section are skipped."""
     if not str(path).lower().endswith('.csv'):
         return []
     try:
         with open(path, newline='') as f:
-            if 'Plate information' not in f.read(2000):
-                return []
+            text = f.read()
+        if 'Plate information' not in text:
+            return []
         try:
-            from raw_data_parsers import check_envision_csv
+            from raw_data_parsers import _block_layout_problems, _envision_ncols, plate_dict
         except ImportError:
             return []
-        problems = check_envision_csv(path)
+        import csv
+        nrows = {v[2] + 1: v[1] for v in plate_dict.values()}.get(_envision_ncols(path), 16)
+        lines = list(csv.reader(text.splitlines()))
+        problems = [p for p in _block_layout_problems(lines, nrows)
+                    if 'block starting here' in p or 'before any Plate information' in p]
     except Exception as e:
-        logger.warning(f"Could not check {path} for EnVision format problems: {e}")
+        logger.warning(f"Could not check the block order of {path}: {e}")
         return []
     if problems:
-        logger.warning(f"{path} doesn't look like an untouched EnVision export. Pipeline Pilot will probably "
-                       f"reject it. Fix this copy by hand (blank, not 0, for missing wells):\n  "
-                       + '\n  '.join(problems))
+        logger.warning(f"{path}: the EnVision export is ordered wrong (each block should be Plate information, "
+                       f"Background information, then the results, with row A on line 12). Ideally re-export it "
+                       f"from EnVision with Plate and Background information placed before the results. If you "
+                       f"can't, the tidy step re-arranges this copy.\n  " + '\n  '.join(problems[:5]))
     return problems
 
 

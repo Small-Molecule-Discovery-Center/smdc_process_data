@@ -151,7 +151,7 @@ def test_tidy_envision_files_touches_only_the_files_given(tmp_path):
     assert len(lines[0].split(',')) == 25 and lines[1] == ''      # trimmed, blank line kept
     assert len(other.read_text().split(',')) == 27                # not listed: untouched
     again = raw_data_parsers.tidy_envision_files(str(wide))
-    assert again[['rows trimmed', 'background rows padded', "Z' blocks filled"]].iloc[0].sum() == 0  # tidy
+    assert again[['rows trimmed', 'blocks re-arranged', "Z' blocks filled"]].iloc[0].sum() == 0  # tidy
 
 
 def test_tidy_envision_files_names_missing_files(tmp_path):
@@ -224,17 +224,74 @@ def test_block_layout_tells_blank_row_p_from_a_missing_row_in_any_block():
     assert problems[0].startswith(f"line {len(full) + 14}:")
 
 
-def test_single_background_row_is_padded_so_row_a_is_line_12(tmp_path):
+def _block(label='1', bg_rows=('1,x', '1,y'), title='Results for ch1'):
     header = ',' + ','.join(f'{c:02d}' for c in range(1, 25))
-    block = (['Plate information', 'Plate,Repeat', '1,1', '', 'Background information', 'Plate,Label', '1,x', '',
-              'Results for ch1', header] + [','.join([r] + ['1'] * 24) for r in 'ABCDEFGHIJKLMNOP'] + [''])
-    f = tmp_path / 'one_label.csv'
-    f.write_text('\n'.join(block + block) + '\n')
-    lines = list(csv.reader(open(f, newline='')))
-    assert 'tidy cell adds the missing blank line' in raw_data_parsers._block_layout_problems(lines)[0]
-    assert raw_data_parsers.pad_single_background_row_in_file(str(f)) == (True, 2)
-    assert raw_data_parsers._block_layout_problems(list(csv.reader(open(f, newline='')))) == []
-    assert raw_data_parsers.pad_single_background_row_in_file(str(f)) == (False, 0)   # only once
+    return {'plate': ['Plate information', 'Plate,Repeat,Barcode', f'{label},1,'],
+            'background': ['Background information', 'Plate,Label', *bg_rows],
+            'results': [title, header] + [','.join([r] + [label] * 24) for r in 'ABCDEFGHIJKLMNOP']}
+
+
+def _tidy_layout(*blocks):
+    lines = []
+    for b in blocks:
+        lines += b['plate'] + [''] + b['background'] + [''] + b['results'] + ['']
+    return lines + ['', 'Basic assay information ,', 'Assay ID: ,,,,4310']
+
+
+def _arrange(tmp_path, lines):
+    f = tmp_path / 'run.csv'
+    f.write_text('\n'.join(lines) + '\n')
+    result = raw_data_parsers.arrange_envision_blocks_in_file(str(f))
+    return result, f.read_text().split('\n')[:-1]
+
+
+def test_arrange_leaves_a_correct_export_alone(tmp_path):
+    good = _tidy_layout(_block('1'), _block('2'))
+    assert _arrange(tmp_path, good) == ((False, 0), good)
+
+
+def test_arrange_pads_a_single_background_row(tmp_path):
+    one = _block('1', bg_rows=('1,x',))
+    lines = _tidy_layout(one, _block('2'))
+    assert 'tidy step adds the missing blank line' in raw_data_parsers._block_layout_problems(
+        list(csv.reader(lines)))[0]
+    (changed, n), out = _arrange(tmp_path, lines)
+    assert changed and n == 1
+    assert out[:12] == one['plate'] + [''] + one['background'] + ['', ''] + one['results'][:2] + ['A,' + ','.join(['1'] * 24)]
+    assert raw_data_parsers._block_layout_problems(list(csv.reader(out))) == []
+    assert _arrange(tmp_path, out)[0] == (False, 0)                      # only once
+
+
+def test_arrange_moves_plate_and_background_info_above_results_in_every_block(tmp_path):
+    b1, b2 = _block('1', title='Calculated results: Calc 1'), _block('2')
+    results_first = []
+    for b in (b1, b2):
+        results_first += b['results'] + [''] + b['plate'] + [''] + b['background'] + ['']
+    results_first += ['', 'Basic assay information ,', 'Assay ID: ,,,,4310']
+    (changed, n), out = _arrange(tmp_path, results_first)
+    assert changed and n == 2
+    assert out == _tidy_layout(b1, b2)
+    assert raw_data_parsers._block_layout_problems(list(csv.reader(out))) == []
+
+
+def test_arrange_adds_missing_blank_lines_between_sections(tmp_path):
+    b = _block('1')
+    squashed = b['plate'] + b['background'] + b['results'] + ['', '', 'Basic assay information ,']
+    (changed, n), out = _arrange(tmp_path, squashed)
+    assert changed and n == 1
+    assert out[11].startswith('A,') and out[:4] == b['plate'] + ['']
+
+
+def test_arrange_refuses_blocks_it_cannot_pair(tmp_path, caplog):
+    b = _block('1')
+    lines = b['plate'] + [''] + b['results'] + [''] + b['results'] + [''] + b['background'] + ['']
+    with caplog.at_level('WARNING', logger='raw_data_parsers'):
+        assert _arrange(tmp_path, lines) == ((False, 0), lines)
+    assert 'second results section' in caplog.text and 're-export' in caplog.text
+    extra = _tidy_layout(b)[:-3] + b['results'] + ['']               # a results section with no block
+    with caplog.at_level('WARNING', logger='raw_data_parsers'):
+        assert _arrange(tmp_path, extra)[0] == (False, 0)
+    assert 'last block has only results' in caplog.text
 
 
 @pytest.mark.parametrize('nrows, ncols, last', [(8, 12, 'H'), (16, 24, 'P'), (32, 48, 'AF')])
@@ -262,3 +319,16 @@ def test_block_layout_flags_grid_rows_pipeline_pilot_would_drop():
     rows[4][3] = '1.2E+05'
     problems = raw_data_parsers._block_layout_problems(top + rows + [[]])
     assert len(problems) == 1 and 'row E' in problems[0] and 'shifts the rows below' in problems[0]
+
+
+def test_tidy_keeps_all_48_columns_of_a_1536_grid(tmp_path):
+    header = ',' + ','.join(f'{c:02d}' for c in range(1, 49))
+    labels = raw_data_parsers._grid_row_labels(32)
+    lines = (['Plate information', 'Plate,Repeat,Barcode', '1,1,', '', 'Background information', 'Plate,Label',
+              '1,x', '1,y', '', 'Results for ch1', header] + [','.join([r] + ['2'] * 48) for r in labels]
+             + ['', '', 'Basic assay information ,'])
+    f = tmp_path / 'p1536.csv'
+    f.write_text('\n'.join(lines) + '\n')
+    out = raw_data_parsers.tidy_envision_files([str(f)])
+    assert out['rows trimmed'].tolist() == [0] and out['problems'].tolist() == ['']
+    assert f.read_text().split('\n')[:-1] == lines

@@ -227,9 +227,15 @@ def _envision_load_csv_files(load_dir="./toload", plate_type='384'):
                 try:
                     df=pd.read_csv(os.path.join(root, file), header=None)
                 except Exception as e:
-                    logger.error(f"Error reading {file}: {e}. Falling back to envision-specific CSV loading for {file}")
+                    logger.info(f"{file} has rows of different widths ({e}); reading it with the EnVision column layout")
                     ncols=plate_dict[plate_type][2]+2
-                    df=pd.read_csv(os.path.join(root, file),  header=None, names=np.arange(0,ncols), usecols=np.arange(0,ncols), skip_blank_lines=False).dropna(how='all', axis=1)
+                    # Pad or cut every row to ncols first: read_csv rejects a
+                    # names list longer than the widest row (e.g. no trailing comma).
+                    with open(os.path.join(root, file), newline='') as fh:
+                        buf = io.StringIO()
+                        csv.writer(buf).writerows((r + [''] * ncols)[:ncols] for r in csv.reader(fh))
+                    buf.seek(0)
+                    df=pd.read_csv(buf, header=None, names=np.arange(0,ncols), skip_blank_lines=False).dropna(how='all', axis=1)
                     
                 dfs.append(df)
     return dfs, filenames
@@ -880,13 +886,15 @@ def trim_csv_columns_in_file(csv_path: str, ncols: int = 25) -> Tuple[bool, int]
         text = f.read()
     newline = '\r\n' if '\r\n' in text else '\n'
     rows = list(csv.reader(text.splitlines()))
-    trimmed = sum(len(r) > ncols for r in rows)
+    # Only rows with values past ncols; a trailing empty field (r ends in ',') is left alone.
+    over = [any(str(v).strip() for v in r[ncols:]) for r in rows]
+    trimmed = sum(over)
     if not trimmed:
         return (False, 0)
     with open(csv_path, 'w', newline='') as f:
         writer = csv.writer(f, lineterminator=newline)
-        for r in rows:
-            writer.writerow(r[:ncols])
+        for r, cut in zip(rows, over):
+            writer.writerow(r[:ncols] if cut else r)
     logger.info(f"Trimmed {trimmed} row(s) of {csv_path} to {ncols} columns")
     return (True, trimmed)
 
@@ -905,55 +913,133 @@ def _wells_per_read(csv_path, plate_type='384'):
     return [int(parsed[c].notna().sum()) for c in meas]
 
 
-def pad_single_background_row_in_file(csv_path: str) -> Tuple[bool, int]:
-    """Where a block's Background information has one data row instead of
-    two, add a blank line after it so row A of the results grid is on line 12
-    of the block, as for two-row exports. Edits in place only when needed.
+def _envision_section_kind(row):
+    """'plate', 'background' or 'results' if this CSV row starts that kind of
+    EnVision section, else None."""
+    first = str(row[0]).strip() if row else ''
+    if first.startswith('Plate information'):
+        return 'plate'
+    if first.startswith('Background information'):
+        return 'background'
+    if first.startswith(('Calculated results', 'Results')):
+        return 'results'
+    return None
+
+
+def arrange_envision_blocks_in_file(csv_path: str) -> Tuple[bool, int]:
+    """Lay out every block of an EnVision CSV the way the upload expects, in place.
+
+    Each block becomes, counting its 'Plate information' line as line 1:
+
+        1  Plate information          5  Background information
+        2  header row                 6  header row
+        3  plate row                  7-8  background rows (a blank line
+        4  blank                           stands in for a missing 2nd row)
+                                      9  blank
+                                      10 results title, 11 column numbers,
+                                      12 row A ... last row, then one blank line
+
+    A block is one Plate information, one Background information and one
+    results section, in any order in the file: an export with the results
+    placed first is re-ordered. Section contents are not changed, only their
+    order and the blank lines between them. Everything from 'Basic assay
+    information' on is kept as it is.
+
+    The file is left alone, with a warning, when the sections can't be paired
+    up safely (for example two results sections with no Plate information
+    between them). check_envision_csv still reports anything left over, such
+    as a third background row or values pasted into the grid.
 
     Returns:
-        (changed, blocks_padded)
+        (changed, blocks_rearranged)
     """
     with open(csv_path, newline='') as f:
         text = f.read()
     newline = '\r\n' if '\r\n' in text else '\n'
     rows = list(csv.reader(text.splitlines()))
 
-    def blank(i):
-        return i >= len(rows) or not any(str(v).strip() for v in rows[i])
+    def blank(r):
+        return not any(str(v).strip() for v in r)
 
-    def first(i):
-        return str(rows[i][0]).strip() if i < len(rows) and rows[i] else ''
+    stop = next((i for i, r in enumerate(rows) if r and str(r[0]).strip().startswith('Basic assay information')),
+                len(rows))
+    starts = [i for i in range(stop) if _envision_section_kind(rows[i])]
+    if not starts:
+        return (False, 0)
+    blank_row = next((r for r in rows[:stop] if r and blank(r) and len(r) > 1), [])
 
-    padded, out, i = 0, [], 0
-    while i < len(rows):
-        out.append(rows[i])
-        # Background information, header, ONE row, blank, results title
-        if (first(i).startswith('Background information') and not blank(i + 2) and blank(i + 3)
-                and first(i + 4).startswith(('Calculated results', 'Results'))):
-            out += rows[i + 1:i + 4]
-            out.append([''] * max(1, len(rows[i + 3])))
-            padded += 1
-            i += 4
-            continue
-        i += 1
-    if not padded:
+    def strip_trailing_blanks(block):
+        while block and blank(block[-1]):
+            block = block[:-1]
+        return block
+
+    sections = [(_envision_section_kind(rows[a]), a, strip_trailing_blanks(rows[a:b]))
+                for a, b in zip(starts, starts[1:] + [stop])]
+    groups, cur = [], {}
+    for kind, at, lines in sections:
+        if kind in cur:
+            logger.warning(f"{csv_path}: line {at + 1} starts a second {kind} section before the block above has "
+                           "Plate information, Background information and results. Not re-arranging this file; "
+                           "re-export it from EnVision.")
+            return (False, 0)
+        cur[kind] = (at, lines)
+        if len(cur) == 3:
+            groups.append(cur)
+            cur = {}
+    if cur:
+        logger.warning(f"{csv_path}: the last block has only {', '.join(sorted(cur))}. Not re-arranging this "
+                       "file; re-export it from EnVision.")
+        return (False, 0)
+
+    out = [r for r in rows[:starts[0]]]
+    rearranged = 0
+    for g in groups:
+        block = list(g['plate'][1]) + [blank_row]
+        bg = list(g['background'][1])
+        block += bg + [blank_row] * max(1, 5 - len(bg))   # title + header + 2 rows, then a blank line
+        block += list(g['results'][1]) + [blank_row]
+        first_at = min(at for at, _ in g.values())
+        if [list(r) for r in rows[first_at:first_at + len(block)]] != [list(r) for r in block]:
+            rearranged += 1
+        out += block
+    trailing = 0
+    for r in reversed(rows[:stop]):
+        if not blank(r):
+            break
+        trailing += 1
+    out += [blank_row] * max(0, trailing - 1) + rows[stop:]
+    if out == rows:
         return (False, 0)
     with open(csv_path, 'w', newline='') as f:
         csv.writer(f, lineterminator=newline).writerows(out)
-    logger.info(f"Added a blank line after the single Background information row in {padded} block(s) of {csv_path}")
-    return (True, padded)
+    logger.info(f"Re-arranged {rearranged} block(s) of {csv_path} so row A of each results grid is on line 12")
+    return (True, rearranged)
 
 
-def tidy_envision_files(paths, ncols: int = 25) -> pd.DataFrame:
+def _envision_ncols(csv_path, default=25):
+    """Row label + plate columns (13, 25 or 49), from the first plate grid's
+    column-number header; default if no grid header is found."""
+    with open(csv_path, newline='') as f:
+        for r in csv.reader(f):
+            if r and not str(r[0]).strip() and len(r) > 1 and str(r[1]).strip().lstrip('0') == '1':
+                n = sum(1 for v in r[1:] if str(v).strip())
+                if n in (12, 24, 48):
+                    return n + 1
+    return default
+
+
+def tidy_envision_files(paths, ncols: int = None) -> pd.DataFrame:
     """Tidy the given EnVision CSVs in place and check what can't be tidied.
 
-    Fixes: trims extra columns a user added after the plate (ncols = row
-    label + 24), adds a blank line after a single Background information row
-    (so row A is on line 12, as with two rows), and fills empty Z' blocks. Checks (reported, not fixed): the
-    block layout (row A on line 12 counting each block's 'Plate information'
-    line as 1, i.e. Plate and Background information first, one blank line
-    between blocks), values pasted outside the grid, and reads covering
-    different numbers of wells. See check_envision_csv.
+    Required before uploading EnVision files. Fixes: trims extra columns a
+    user added after the plate (ncols = row label + plate columns, read from
+    each file's grid header when None: 13, 25 or 49); re-arranges each
+    block to Plate information, Background information, then results, with
+    the blank lines that put row A on line 12 (arrange_envision_blocks_in_file);
+    and fills empty Z' blocks. Then checks what it can't fix and must be
+    cleaned by hand: values pasted outside the grid, grid rows Pipeline Pilot
+    would drop, and reads covering different numbers of wells. See
+    check_envision_csv.
 
     Meant for the raw files make_dr_platemaps_and_folders copied into the
     toload folders (plate_maps.raw_files(info)), so only the files that will
@@ -961,8 +1047,9 @@ def tidy_envision_files(paths, ncols: int = 25) -> pd.DataFrame:
     Non-CSV paths (e.g. .rpt) are skipped.
 
     Returns:
-        DataFrame with one row per CSV: rows trimmed and Z' blocks filled (0 =
-        nothing to fix), wells per read, and problems (empty = compliant).
+        DataFrame with one row per CSV: rows trimmed, blocks re-arranged and
+        Z' blocks filled (0 = nothing to fix), wells per read, and problems
+        (empty = ready to upload).
     """
     paths = [str(p) for p in ([paths] if isinstance(paths, (str, os.PathLike)) else paths)]
     missing = [p for p in paths if not os.path.isfile(p)]
@@ -972,19 +1059,21 @@ def tidy_envision_files(paths, ncols: int = 25) -> pd.DataFrame:
     skipped = len(paths) - len(csvs)
     rows = []
     for p in csvs:
-        _, trimmed = trim_csv_columns_in_file(p, ncols)
-        _, bg_padded = pad_single_background_row_in_file(p)
+        width = ncols or _envision_ncols(p)
+        plate_type = {13: '96', 25: '384', 49: '1536'}.get(width)
+        _, trimmed = trim_csv_columns_in_file(p, width)
+        _, arranged = arrange_envision_blocks_in_file(p)
         _, zblocks = fill_zprime_blocks_in_file(p)
-        counts = _wells_per_read(p)
-        problems = check_envision_csv(p)
-        rows.append({'file': p, 'rows trimmed': trimmed, 'background rows padded': bg_padded,
+        counts = _wells_per_read(p, plate_type or '384')
+        problems = check_envision_csv(p, plate_type)
+        rows.append({'file': p, 'rows trimmed': trimmed, 'blocks re-arranged': arranged,
                      "Z' blocks filled": zblocks,
                      'wells per read': '/'.join(map(str, counts)), 'reads differ': len(set(counts)) > 1,
                      'problems': '; '.join(problems)})
-    cols = ['file', 'rows trimmed', 'background rows padded', "Z' blocks filled", 'wells per read',
+    cols = ['file', 'rows trimmed', 'blocks re-arranged', "Z' blocks filled", 'wells per read',
             'reads differ', 'problems']
     out = pd.DataFrame(rows, columns=cols)
-    fixed = ['rows trimmed', 'background rows padded', "Z' blocks filled"]
+    fixed = ['rows trimmed', 'blocks re-arranged', "Z' blocks filled"]
     changed = int((out[fixed].sum(axis=1) > 0).sum()) if len(out) else 0
     for _, r in out[out['problems'] != ''].iterrows():
         logger.warning(f"{r['file']} doesn't look like an untouched EnVision export, and tidying can't fix it: "
@@ -1042,7 +1131,8 @@ def _block_layout_problems(lines, nrows=16):
     results = [i for i in range(stop) if first(i).startswith(('Calculated results', 'Results for'))]
     if results and (not starts or results[0] < starts[0]):
         problems.append(f"line {results[0] + 1}: a results block comes before any Plate information. Export with "
-                        "Plate information and Background information placed before the results.")
+                        "Plate information and Background information placed before the results, or run the tidy step, "
+                        "which re-arranges the blocks.")
     for b in starts:
         n = b + 1  # 1-based line number of this block's Plate information
         expect = [(1, lambda i: first(i).startswith('Plate'), "the Plate information header row"),
@@ -1058,9 +1148,9 @@ def _block_layout_problems(lines, nrows=16):
             where = f"row A is on line {a_row - b + 1} of the block" if a_row is not None else "no row A found"
             single_bg = (first(b + 4).startswith('Background information') and not blank(b + 6)
                          and blank(b + 7) and first(b + 8).startswith(('Calculated results', 'Results')))
-            hint = (" The Background information has one row: the tidy cell adds the missing blank line."
+            hint = (" The Background information has one row: the tidy step adds the missing blank line."
                     if single_bg else " Plate information and Background information must come first, "
-                    "each followed by one blank line.")
+                    "each followed by one blank line. The tidy step re-arranges this.")
             problems.append(f"line {n} (block starting here): expected {what} on line {off + 1} of the block, "
                             f"so row A lands on line 12 ({where}).{hint}")
             continue
