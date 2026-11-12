@@ -488,6 +488,16 @@ def test_check_dr_plates_finds_wells_that_differ_from_the_input(tmp_path, monkey
     assert (row['mismatched wells'], row['no Lot']) == (2, 1)
 
 
+def test_check_dr_plates_draw_takes_a_count_or_all():
+    assert pm._plates_to_draw(1, 5) == 1
+    assert pm._plates_to_draw('all', 5) == 5 and pm._plates_to_draw('ALL', 5) == 5
+    assert pm._plates_to_draw(True, 5) == 5
+    assert pm._plates_to_draw(0, 5) == 0 and pm._plates_to_draw(None, 5) == 0 and pm._plates_to_draw(False, 5) == 0
+    assert pm._plates_to_draw(9, 3) == 3
+    with pytest.raises(ValueError):
+        pm._plates_to_draw('some', 3)
+
+
 def test_check_dr_plates_needs_the_info_step_2_returned():
     with pytest.raises(ValueError, match='DR plate files'):
         pm.check_dr_plates(pd.DataFrame({'Grid_num': ['P1']}))
