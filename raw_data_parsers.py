@@ -1002,6 +1002,9 @@ def tidy_envision_files(paths, ncols: int = 25) -> pd.DataFrame:
 _GRID_ROW = re.compile(r'^[A-Z]{1,2}$')
 
 
+_PP_GRID_LINE = re.compile(r'^(\w[,\t])?[\d\.\-\t,]*$')
+
+
 def _grid_row_labels(nrows):
     """Row letters for a plate grid: A..P for 384, A..Z then AA..AF for 1536."""
     labels = []
@@ -1072,6 +1075,21 @@ def _block_layout_problems(lines, nrows=16):
             problems.append(f"line {b + 12 + i}: expected row {lab} of the grid that starts on line {b + 12}, "
                             f"found {got!r}" + (" (blank line)." if blank(b + 11 + i) else "."))
             continue
+        # Pipeline Pilot's EnVision Reader keeps only grid lines matching this
+        # pattern and letters rows by their order, not by the label in the file.
+        # A row with text (e.g. 1.2E+05, NaN, #DIV/0!) is dropped and every row
+        # below it moves up one letter. Its 16-row limit means 1536 is skipped.
+        if nrows <= 16:
+            for i in range(nrows):
+                cells = lines[b + 11 + i]
+                if not any(str(v).strip() for v in cells[1:]):
+                    continue  # an empty row (label only) is kept by PP as empty wells
+                line = ','.join(str(v) for v in cells)
+                if not _PP_GRID_LINE.match(line):
+                    problems.append(f"line {b + 12 + i}: row {first(b + 11 + i)} has a value that is not a plain "
+                                    "number (for example text, NaN or 1.2E+05). Pipeline Pilot drops this row and "
+                                    "shifts the rows below it up one letter.")
+                    break
         last = b + 11 + nrows - 1
         if not blank(last + 1):
             problems.append(f"line {last + 2}: expected a blank line after the results grid that starts on line "
