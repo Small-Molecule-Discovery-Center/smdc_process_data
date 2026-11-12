@@ -939,6 +939,10 @@ def arrange_envision_blocks_in_file(csv_path: str) -> Tuple[bool, int]:
                                       10 results title, 11 column numbers,
                                       12 row A ... last row, then one blank line
 
+    Blank lines are added wherever needed so row A is always on line 12.
+    If a section is too long for that (e.g. three background rows), the
+    block is written with one blank line between sections and a warning.
+
     A block is one Plate information, one Background information and one
     results section, in any order in the file: an export with the results
     placed first is re-ordered. Section contents are not changed, only their
@@ -993,11 +997,21 @@ def arrange_envision_blocks_in_file(csv_path: str) -> Tuple[bool, int]:
 
     out = [r for r in rows[:starts[0]]]
     rearranged = 0
+
+    def pad_to(block, n):
+        # at least one blank line, more until the block is n lines long
+        return block + [blank_row] * max(1, n - len(block))
+
     for g in groups:
-        block = list(g['plate'][1]) + [blank_row]
-        bg = list(g['background'][1])
-        block += bg + [blank_row] * max(1, 5 - len(bg))   # title + header + 2 rows, then a blank line
-        block += list(g['results'][1]) + [blank_row]
+        results = list(g['results'][1])
+        before_a = next((i for i, r in enumerate(results) if r and str(r[0]).strip() == 'A'), 2)
+        block = pad_to(list(g['plate'][1]), 4)                  # Background information on line 5
+        block = pad_to(block + list(g['background'][1]), 11 - before_a)   # row A on line 12
+        if len(block) + before_a != 11:
+            logger.warning(f"{csv_path}: the block whose Plate information is on line "
+                           f"{g['plate'][0] + 1} has too many rows to put row A on line 12 by adding blank "
+                           "lines. Re-export it from EnVision or fix it by hand.")
+        block += results + [blank_row]
         first_at = min(at for at, _ in g.values())
         if [list(r) for r in rows[first_at:first_at + len(block)]] != [list(r) for r in block]:
             rearranged += 1
