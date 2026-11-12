@@ -1367,6 +1367,46 @@ def check_screen_dates(info, max_age_days=OLD_SCREEN_DAYS, today=None):
     return flagged[have].reset_index(drop=True)
 
 
+def check_destination_plates(info, cnx=None):
+    """Warn when a destination plate (Grid_num) is listed twice in the Info
+    tab, or already exists in HiTS inventory as an IP_BARCODE or IP_GRID_NUM.
+
+    Uploading creates the destination plate in inventory, so an existing one
+    usually means the barcode was reused or an earlier upload of it got part
+    way. It's a warning, not an error: a deliberate rerun is fine.
+
+    Returns:
+        dict: {'duplicated': [grid_nums listed more than once],
+               'in_hits': DataFrame of matching INV_PLATE rows}.
+    """
+    grids = [str(g).strip() for g in info.get('Grid_num', pd.Series(dtype=str)).dropna()]
+    grids = [g for part in grids for g in part.split(';') if g.strip()]
+    grids = [g.strip() for g in grids]
+    dup = sorted({g for g in grids if grids.count(g) > 1})
+    if dup:
+        logger.warning(f"Destination plate(s) listed more than once in the Info tab: {', '.join(dup)}. "
+                       "Each Grid_num must be a different plate.")
+    in_hits = pd.DataFrame(columns=['IP_BARCODE', 'IP_GRID_NUM', 'IP_INS_DATE'])
+    if grids:
+        close = cnx is None
+        cnx = cnx or _connect()
+        try:
+            query = text("select IP_BARCODE, IP_GRID_NUM, IP_INS_DATE from INV_PLATE "
+                         "where IP_BARCODE in :g or IP_GRID_NUM in :g").bindparams(
+                bindparam('g', expanding=True))
+            in_hits = pd.read_sql(query, cnx, params={'g': sorted(set(grids))})
+        finally:
+            if close:
+                cnx.dispose()
+        if len(in_hits):
+            rows = '\n'.join(f"  {r.IP_BARCODE} (grid_num {r.IP_GRID_NUM}, added {r.IP_INS_DATE})"
+                             for r in in_hits.itertuples())
+            logger.warning(f"{len(in_hits)} destination plate(s) already exist in HiTS inventory ({READ_DB}):\n"
+                           f"{rows}\nIs this a rerun of an earlier upload? If not, the barcode is already "
+                           "taken: give the plate a new Grid_num.")
+    return {'duplicated': dup, 'in_hits': in_hits}
+
+
 def _source_plate_mode(value):
     """Which Source_plate rule a cell selects.
 
@@ -2144,6 +2184,7 @@ def make_dr_platemaps_and_folders(infile='', users=[("Amanda", "Paulson")], base
     check_screen_dates(info)
     if dose_response:
         _check_source_plates(info)  # fail now, not after folders are made and files copied
+    check_destination_plates(info)
     load_folders = []
     dr_plates = []  # (grid_num, path) of every *_DR_plate.xlsx written, for check_dr_plates
     raw_files = []  # raw instrument files copied into the toload folders, for tidying

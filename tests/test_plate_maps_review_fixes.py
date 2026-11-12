@@ -220,6 +220,7 @@ def test_folder_pipeline_passes_each_plate_its_own_row(tmp_path, monkeypatch):
         return pd.DataFrame({'Destination well': ['A01'], 'Sci_PosControl': [False], 'Sci_NegControl': [False]})
     monkeypatch.setattr(pm, '_read_info_sheet', lambda infile: ({}, info))
     monkeypatch.setattr(pm, 'make_dr_platemaps', fake_make)
+    monkeypatch.setattr(pm, 'check_destination_plates', lambda info: None)
     (tmp_path / 'out' / '1_older_assay' / 'toload_0' / '20250101').mkdir(parents=True)
     result = pm.make_dr_platemaps_and_folders('info.xlsx', basedir=str(tmp_path / 'out'), share_root=str(share))
     assert seen == {'P1': 'use map', 'P2': 'use lots', 'P3': 'XYZ-MA01', 'P4': 'XYZ-MA01'}
@@ -538,3 +539,17 @@ def test_old_or_future_screen_dates_are_flagged(caplog):
     assert '2 assay version(s)' in caplog.text and 'plates P2, P3' in caplog.text
     assert 'historical data' in caplog.text
     assert pm.check_screen_dates(info.assign(Date_of_screen=20261201), today='2026-11-12').shape[0] == 4  # future
+
+
+def test_destination_plates_duplicated_or_already_in_hits(monkeypatch, caplog):
+    info = pd.DataFrame({'Grid_num': ['P1', 'P2;P3', 'P1']})
+    seen = {}
+
+    def fake_sql(query, cnx, params):
+        seen.update(params)
+        return pd.DataFrame({'IP_BARCODE': ['P2'], 'IP_GRID_NUM': ['P2'], 'IP_INS_DATE': ['2026-06-11']})
+    monkeypatch.setattr(pm.pd, 'read_sql', fake_sql)
+    with caplog.at_level('WARNING'):
+        out = pm.check_destination_plates(info, cnx=object())
+    assert out['duplicated'] == ['P1'] and seen['g'] == ['P1', 'P2', 'P3']
+    assert 'listed more than once' in caplog.text and 'already exist in HiTS' in caplog.text and 'P2 (grid_num P2' in caplog.text
