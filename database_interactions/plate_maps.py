@@ -102,10 +102,22 @@ import logging
 # output visible. That is the job the old basicConfig(force=True) was doing, by
 # tearing out Jupyter's handler; setting the level instead leaves other people's
 # logging alone.
-logging.basicConfig(level=logging.INFO)
+#
+# The default is WARNING, so new operators only see what needs their attention.
+# The pipeline logs its routine decisions at INFO: call set_log_level('INFO')
+# (the notebook's LOG_LEVEL setting) to see them while debugging.
+logging.basicConfig(level=logging.WARNING)
 logger = logging.getLogger()  # root logger
-logger.setLevel(logging.INFO)  # the pipeline logs its decisions at INFO
+logger.setLevel(logging.WARNING)
 logging.getLogger("matplotlib").setLevel(logging.WARNING)  # root is noisy; mute matplotlib
+
+
+
+def set_log_level(level='WARNING'):
+    """Show pipeline messages at this level and above: 'WARNING' (default,
+    only what needs attention) or 'INFO' (every step, for debugging)."""
+    logging.getLogger().setLevel(getattr(logging, str(level).upper()) if isinstance(level, str) else level)
+
 
 sns.set_theme(rc={'figure.dpi': 150, 'figure.figsize': (5, 3.75)})
 
@@ -1310,6 +1322,51 @@ NO_SOURCE_PLATE_WORDS = {'na', 'n/a', 'n.a', 'n.a.', 'none',
                          'use my name', 'use users', 'use user', 'use name', 'my name', 'users'}
 
 
+OLD_SCREEN_DAYS = 92   # about 3 months
+
+
+def check_screen_dates(info, max_age_days=OLD_SCREEN_DAYS, today=None):
+    """Warn about assay versions whose Date_of_screen is more than ~3 months
+    old, or in the future.
+
+    Recent data is the normal case; an old date usually means either a
+    historical upload or a typo (often the year). It's a warning, not an
+    error, so historical data still goes through.
+
+    Args:
+        info (DataFrame): the parsed Info sheet (Date_of_screen as YYYYMMDD ints).
+        max_age_days (int): older than this is flagged. Default about 3 months.
+        today (date, optional): for tests. Default: today.
+    Returns:
+        DataFrame: the flagged assay versions (empty if none).
+    """
+    cols = ['Raw_assay_ID', 'Assay_name', 'Date_of_screen', 'Grid_num']
+    if 'Date_of_screen' not in info.columns:
+        return pd.DataFrame(columns=cols)
+    today = pd.Timestamp(today or pd.Timestamp.today().normalize())
+    dates = pd.to_datetime(info['Date_of_screen'].astype(str), format='%Y%m%d', errors='coerce')
+    age = (today - dates).dt.days
+    flagged = info.assign(_date=dates, _age=age)[(age > max_age_days) | (age < 0)]
+    if flagged.empty:
+        return pd.DataFrame(columns=cols)
+    have = [c for c in cols if c in flagged.columns]
+    versions = (flagged.groupby([c for c in ('Raw_assay_ID', 'Assay_name', '_date') if c in flagged.columns],
+                                dropna=False)
+                .agg(plates=('Grid_num', lambda g: ', '.join(map(str, g))) if 'Grid_num' in flagged else ('_age', 'size'),
+                     age=('_age', 'first'))
+                .reset_index())
+    lines = []
+    for _, v in versions.iterrows():
+        when = 'in the future' if v.age < 0 else f'{int(v.age)} days ago'
+        lines.append(f"  assay {v.get('Raw_assay_ID', '?')} {v.get('Assay_name', '')}: "
+                     f"{v._date:%Y-%m-%d} ({when}); plates {v.plates}")
+    logger.warning(
+        f"{len(versions)} assay version(s) have a Date_of_screen more than {max_age_days} days old or in "
+        "the future:\n" + '\n'.join(lines) + "\nIs this historical data? If so, carry on. If not, the "
+        "date in the Info tab is probably wrong (check the year): fix it and rerun step 2.")
+    return flagged[have].reset_index(drop=True)
+
+
 def _source_plate_mode(value):
     """Which Source_plate rule a cell selects.
 
@@ -1447,7 +1504,7 @@ def make_dr_platemaps(dp, row, users, basedir=None, replace_dict=None, control_d
             replace_dict[str(label)] = np.nan
             replace_dict[str(label).strip()] = np.nan
     replace_dict, replace_vals = _build_replace_metadata(replace_dict)
-    print(replace_dict)
+    logger.info(f"Labels replaced in block 0: {replace_dict}")
 
     # Open one connection and thread it through the lookups. A missing
     # credential raises here, next to its cause, instead of failing later.
@@ -1764,8 +1821,13 @@ def get_lot_info(row, dids, maps, users, replace_vals):
     # Stage 4: last resort, assume the newest lot this user registered.
     missing_mask = (~dids.SMDC_ID.isna()) & ((dids.Lot.isna()) | (dids.Lot == ''))
     if len(dids[missing_mask]) > 0:
-        logger.info('Getting lot info from user')
         ids = dids[missing_mask].SMDC_ID.astype(int).astype(str).unique().tolist()
+        # Expected with 'NA' / 'use my name'; anywhere else it's a guess the operator should check.
+        level = (logging.INFO if _source_plate_mode(_series_get_ci(row, 'Source_plate', '')) == 'na'
+                 else logging.WARNING)
+        logger.log(level, f"Getting lot info from user for {len(ids)} compound(s) on "
+                          f"{_series_get_ci(row, 'Grid_num', '')}: the newest lot registered by USERS. "
+                          "Check those wells.")
         lot_map = _unique_user_lots(lookup_lot_by_user(ids=ids, users=users))
         mask = dids["SMDC_ID"].notna() & dids["Lot"].isna()
         dids.loc[mask, "Lot"] = dids.loc[mask, "SMDC_ID"].map(lot_map)
@@ -2079,6 +2141,7 @@ def make_dr_platemaps_and_folders(infile='', users=[("Amanda", "Paulson")], base
     infile = resolve_share_path(infile, share_root)
     basedir = resolve_share_path(basedir, share_root)
     dp, info = _read_info_sheet(infile)
+    check_screen_dates(info)
     if dose_response:
         _check_source_plates(info)  # fail now, not after folders are made and files copied
     load_folders = []
