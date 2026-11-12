@@ -574,3 +574,23 @@ def test_destination_plates_duplicated_or_already_in_hits(monkeypatch, caplog):
         out = pm.check_destination_plates(info, cnx=object())
     assert out['duplicated'] == ['P1'] and seen['g'] == ['P1', 'P2', 'P3']
     assert 'listed more than once' in caplog.text and 'already exist in HiTS' in caplog.text and 'P2 (grid_num P2' in caplog.text
+
+
+def test_step_2_warns_only_about_envision_block_order(tmp_path, caplog):
+    header = ',' + ','.join(f'{c:02d}' for c in range(1, 25))
+    plate = ['Plate information', 'Plate,Repeat,Barcode', '1,1,']
+    bg = ['Background information', 'Plate,Label', '1,x', '1,y']
+    res = ['Results for ch1', header] + [','.join([r] + ['1'] * 24) for r in 'ABCDEFGHIJKLMNOP']
+    good = plate + [''] + bg + [''] + res + ['', '', 'Basic assay information ,']
+    pasted = list(good)
+    pasted[2] += ',,,,,,9'                         # hand-pasted value: tidy reports it, not step 2
+    results_first = res + [''] + plate + [''] + bg + ['', '', 'Basic assay information ,']
+    for name, lines in [('good', good), ('pasted', pasted), ('results_first', results_first)]:
+        (tmp_path / f'{name}.csv').write_text('\n'.join(lines) + '\n')
+    with caplog.at_level('WARNING'):
+        assert pm._warn_if_envision_blocks_out_of_order(str(tmp_path / 'good.csv')) == []
+        assert pm._warn_if_envision_blocks_out_of_order(str(tmp_path / 'pasted.csv')) == []
+    assert caplog.text == ''
+    with caplog.at_level('WARNING'):
+        assert pm._warn_if_envision_blocks_out_of_order(str(tmp_path / 'results_first.csv'))
+    assert 'ordered wrong' in caplog.text and 're-export' in caplog.text and 'tidy step' in caplog.text
