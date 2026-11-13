@@ -2603,8 +2603,11 @@ def check_dr_plates(info, draw=1):
         if i < n_draw:
             _draw_dr_layout(grid_num, dr)
             if '[compound] uM' in dr and dr['[compound] uM'].notna().any():
+                # No colourbar: the printed concentrations are the key, and the
+                # colour change between dilution steps is enough to spot a slip.
                 draw_plate_heatmap(barcode=grid_num, df=dr, wells='Destination well',
-                                   values='[compound] uM', labels='[compound] uM', plate_size=384)
+                                   values='[compound] uM', labels='[compound] uM', plate_size=384,
+                                   cbar=False)
     if 0 < n_draw < len(dr_plates):
         logger.warning(f"Drew {n_draw} of {len(dr_plates)} DR plates. Use draw='all' to draw every plate.")
     summary = pd.DataFrame(rows)
@@ -2677,6 +2680,13 @@ def clean_up_folders(infile=None, basedir='./', delete_orig=False, share_root=No
             raise OSError(f"Copy of {oldpath} to {newpath} is incomplete, so nothing was removed from "
                           "toload and no original was deleted. Missing or different: " + ", ".join(missing[:10]))
         shutil.rmtree(oldpath)  # raises on failure; the full copy is already in loaded/
+        if os.path.exists(oldpath):
+            # On an SMB share the server can accept the delete but keep the folder
+            # ("delete pending", shown in Finder with a red no-entry badge) while
+            # another program, e.g. Pipeline Pilot or a Finder window, has it open.
+            # It goes away once that program lets go of it.
+            logger.warning(f"{oldpath} is empty but still listed on the share. Close anything "
+                           "that has it open (Pipeline Pilot, Finder windows); it should then disappear.")
 
     # Delete the originals only after every move above has finished, and only
     # when this original's own copy is in loaded/ (the same assay folder, date

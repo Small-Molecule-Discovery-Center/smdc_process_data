@@ -31,6 +31,7 @@ After `uv sync` or `pip install -e .` (see below), import these from any folder 
   `/mnt/z/` (Windows/WSL). For another drive, pass `share_root=` or set `smdc_share_root`.
 - **`check_grid_num.py`**: checks each `grid_num.txt` against the plates and barcodes in the
   EnVision export. Also runs on the command line: `python check_grid_num.py ROOT -o report.csv`.
+- **`PLATE_MAPS.md`**: full reference for `plate_maps.py`. It covers the workbook format, the `Source_plate` dispatch words, how lots are resolved, and troubleshooting.
 - **`safe_register.py`**: register plates and wells (including daughter plates). It connects to
   the test database `QB3_HiTS_nightly` unless you name `QB3_HiTS`, does a dry run (insert,
   report, roll back) unless you pass `save=True`, and saves plates and wells together, so a
@@ -83,6 +84,20 @@ The install name `smdc-data-proc` is not an import name. Imports are `import raw
 works the same way: activate it, then run `uv pip install -e <path to this repo>`. Rerun that after
 `pyproject.toml` changes, and restart the Jupyter kernel.
 
+`database_interactions` and `data_viz` are installed packages, so from a notebook anywhere,
+including outside this repo, import them directly:
+
+```python
+from database_interactions import plate_maps as pm
+from data_viz import plot_curves as pc
+```
+
+`smdc_paths` is a legacy shim kept for old notebooks that use flat names such as
+`import plate_maps`. Running `import smdc_paths` first puts the module folders on `sys.path`.
+New code should use the package imports above. No `sys.path.append('/Users/.../data-proc')`
+lines are needed. Code is moving out of data-proc piece by piece; whatever has been migrated
+lives here, and the data-proc copy is removed only after that piece is confirmed.
+
 `raw_data_parsers.extract_rpt_data(infile, samples_only=False, outdir="./")`
 extracts Xevo sample metadata and writes spectra to `outdir/samples`.
 The existing tethering analysis entry point delegates to this implementation.
@@ -92,8 +107,8 @@ MySQL defaults to localhost and uses `mysql_user`, `mysql80_pwd`, and
 `mysql80_port`. Remote hosts use `mysql_user`, `mysql_pwd`, and `mysql_port`.
 The database defaults to `hits_db` or `QB3_HiTS`. Environment variables are
 read when creating an engine, so importing the module needs no credentials.
-Tethering analysis still uses the separate data-proc plate_maps/plot_curves
-helpers for database analysis and plotting.
+Tethering analysis imports `plate_maps` and `plot_curves` from this repo
+(`database_interactions` and `data_viz`), not from data-proc.
 
 ### Tests
 

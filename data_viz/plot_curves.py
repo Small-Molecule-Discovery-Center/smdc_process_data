@@ -12,7 +12,11 @@ colors=[(0.212395, 0.359683, 0.55171), (0.153364, 0.497, 0.557724), (0.122312, 0
 sns.set_palette(colors)
 pal=sns.color_palette(colors)
 
-def plot_pct_inhib_curves(compound, raw, curve, targs=['PARP1','PARP2'], save_fig=False, graphcol='intensity_inhibition', fitcrit='R^2', sharey=False, save_lab='HiTS', save_dir='./curve_fits'):
+
+###################################################################################################
+
+
+def plot_pct_inhib_curves(compound, raw, curve, targs=['PARP1','PARP2'], save_fig=False, graphcol='intensity_inhibition', fitcrit='R^2', sharey=False, save_lab='HiTS', save_dir='./curve_fits', conc='M', direct=1, fit="DBMAD"):
     ''' Plot and save IC50 curves on top of raw data for visualization across various targets.
     Raw data frame should at minimum have columns
     [Compound, Target, <response column graphcol>, logconc, Plate, Well_Type]. 'solubility' optional.
@@ -23,6 +27,8 @@ def plot_pct_inhib_curves(compound, raw, curve, targs=['PARP1','PARP2'], save_fi
     sns.set_context('poster')
     rows=int(np.ceil(len(targs)/4))
     cols=int(np.ceil(len(targs)*2/rows))
+    # raw.Compound=raw.Compound.astype(float)
+    # curve.Compound=curve.Compound.astype(float)
     realcurvecols=['Compound']
     for col in curvecols:
         if col in curve.columns:
@@ -60,21 +66,34 @@ def plot_pct_inhib_curves(compound, raw, curve, targs=['PARP1','PARP2'], save_fi
             coff=None
         note=list(set(note.notes.dropna()))
         ppc['notes']='\n'.join(note)
-        
         # get raw data
         ppr=raw[(raw.Compound==compound) & (raw.Target==targ)].copy()
+        if fit=="TBMAD":
+            concs=ppr.logconc.unique().tolist()
+            concs.sort()
+            L2concs=concs[0:2]
+        
         if len(ppr)==0:
             continue
         if 'RealPlate' in ppr.columns:
-            plateNegCtrl=raw[(raw.RealPlate.isin(ppr.RealPlate.unique()))&(raw.Well_Type=='negativeControl')&(raw.Target==targ)]
-        else:
+            # Match the assay endpoint (aeid) too when the data has one; older
+            # inputs without an aeid column keep the plate + target selection.
+            same_aeid = raw.aeid.isin(ppr.aeid.unique()) if 'aeid' in raw.columns else True
+            if fit=="DBMAD":
+                plateNegCtrl=raw[(raw.RealPlate.isin(ppr.RealPlate.unique()))&(raw.Well_Type=='negativeControl')&(raw.Target==targ)&same_aeid]
+            elif fit=="TBMAD":
+                plateNegCtrl=raw[(raw.RealPlate.isin(ppr.RealPlate.unique()))&(raw.logconc.isin(L2concs))&(raw.Target==targ)&same_aeid]
+        elif fit=="DBMAD":
             plateNegCtrl=raw[(raw.Plate.isin(ppr.Plate.unique()))&(raw.Well_Type=='negativeControl')&(raw.Target==targ)]
-        if coff is None:
-            vals=plateNegCtrl[graphcol].values
-            coff=3*np.median(np.absolute(vals - np.median(vals))) # 3*BMAD
+        elif fit=="TBMAD":
+            plateNegCtrl=raw[(raw.Plate.isin(ppr.Plate.unique()))&(raw.logconc.isin(L2concs))&(raw.Target==targ)]
         
-            
-        # get axes bounds       
+        if coff is None:
+            vals = plateNegCtrl[graphcol].dropna()
+            median_val = np.median(vals)
+            coff = median_val + 3 * np.median(np.absolute(vals - median_val)) * direct # 3*BMAD
+        
+        # get axes bounds    
         logconcmin=ppr.logconc.min()-0.5
         logconcmax=ppr.logconc.max()+0.5
         pctmin = min(ppr[graphcol].min(), plateNegCtrl[graphcol].min(), coff)
@@ -87,14 +106,16 @@ def plot_pct_inhib_curves(compound, raw, curve, targs=['PARP1','PARP2'], save_fi
             if (ppc.hitc.iloc[0]==1) and ('succeeded' in ppc.notes.iloc[0]):
                 # try:
                 x = np.linspace(logconcmin, logconcmax, 1000)
-                y = ppc.bottom.iloc[0] + ((ppc.top.iloc[0] - ppc.bottom.iloc[0])/(1+10**((-ppc.pIC50.iloc[0] - x)*float(ppc.hill.iloc[0]))))
+                # fit_scipy_curves gives LogIC50; tcpl_mc5_to_curve gives only pIC50 (= -LogIC50).
+                log_ic50 = ppc.LogIC50.iloc[0] if 'LogIC50' in ppc.columns else -ppc.pIC50.iloc[0]
+                y = ppc.bottom.iloc[0] + ((ppc.top.iloc[0] - ppc.bottom.iloc[0])/(1+10**((log_ic50 - x)*float(ppc.hill.iloc[0]))))
                 ax[i].plot(x,y,c=pal[-1])
                 # except:
                 #     pass
-                pctmin=min(pctmin, ppc.bottom.iloc[0])
-                pctmax=max(pctmax, ppc.top.iloc[0])
-                pctmin = pctmin-0.05*pctmax
-                pctmax = pctmax+0.05*pctmax
+                # pctmin=min(pctmin, min(y))
+                # pctmax=max(pctmax, max(y))
+                # pctmin = pctmin-0.05*pctmax
+                # pctmax = pctmax+0.05*pctmax
            
         # create scatterplot whether it's a hit or not
         if 'RealPlate' in ppr.columns:
@@ -112,7 +133,7 @@ def plot_pct_inhib_curves(compound, raw, curve, targs=['PARP1','PARP2'], save_fi
             ax[i].set_title(f"{compound} {targ}\n No Fits")
         else:
             ax[i].set_title(f"{compound} {targ} IC50{ppc.relation.iloc[0]}{round(ppc.IC50.iloc[0], 4)} uM\n{ppc.notes.iloc[0]}\nHITC: {int(ppc.hitc.iloc[0])}; {fitcrit}={round(ppc[fitcrit].iloc[0], 4)}")
-        ax[i].set_xlabel('log(Concentration in M)')
+        ax[i].set_xlabel(f'log(Concentration in {conc})')
         ax[i].set_xlim(logconcmin, logconcmax)
         ax[i].set_ylim(pctmin, pctmax)
         ax[i].hlines(coff, xmin=logconcmin, xmax=logconcmax, color=pal[-2], zorder=0)
@@ -122,7 +143,10 @@ def plot_pct_inhib_curves(compound, raw, curve, targs=['PARP1','PARP2'], save_fi
         else:
             ax[i+1].hist(plateNegCtrl[graphcol], orientation='horizontal', range=(pctmin,pctmax), bins=22)
         ax[i+1].set_ylim(pctmin, pctmax)
-        ax[i+1].set_xlabel('negCtrlDist')
+        if fit=="DBMAD":
+            ax[i+1].set_xlabel('negCtrlDist')
+        elif fit=="TBMAD":
+            ax[i+1].set_xlabel('L2ConcDist')
         i+=2
         
         # if sharey is true, use maxmax
@@ -144,6 +168,9 @@ def plot_pct_inhib_curves(compound, raw, curve, targs=['PARP1','PARP2'], save_fi
             os.makedirs(save_dir)
         plt.savefig(os.path.join(save_dir, f'{compound}_{save_lab}_curvefit.png'))
         plt.close()
+
+###################################################################################################
+
 
 def plot_sc_data(compound, raw, curve, targs=['PARP1','PARP2'], save_fig=False, graphcol='intensity_inhibition', save_lab='HiTS', save_dir='./curve_fits'):
     ''' Plot and save IC50 curves on top of raw data for visualization across various targets.
@@ -235,6 +262,7 @@ def plot_sc_data(compound, raw, curve, targs=['PARP1','PARP2'], save_fig=False, 
         
 ###################################################################################################
 # from stack overflow
+# curves upside down?
 def ModelAndScatterPlot(xData, yData, color='blue', ax=None, label=None, init=[100, 0, -5.5, 1],
                        bounds=([80,-20,-np.inf,-np.inf], [120, 20, np.inf,np.inf])):
     if ax is None:
@@ -256,7 +284,7 @@ def ModelAndScatterPlot(xData, yData, color='blue', ax=None, label=None, init=[1
     # ax.set_xlabel('X Data') # X axis data label
     # ax.set_ylabel('Y Data') # Y axis data label
     # axes.set_ylim(-20,105)
-    return ax
+    return fittedParameters, pcov, ax
 
 ###################################################################################################
     
@@ -274,7 +302,10 @@ def fit_scipy_curves(cmpds, raw, graphcol, targs=['PARP1','PARP2'], init=np.arra
 
     for cmpd in cmpds:
         for i, targ in enumerate(targs):
+            # print('calculating curve fit for', cmpd, targ)
             ppr=raw[(raw.Compound==cmpd) & (raw.Target==targ)].copy()
+            if len(ppr)==0:
+                continue
             xData=ppr.logconc
             yData = ppr[graphcol].values
 
@@ -296,7 +327,13 @@ def fit_scipy_curves(cmpds, raw, graphcol, targs=['PARP1','PARP2'], init=np.arra
                 SE = np.square(absError) # squared errors
                 MSE = np.mean(SE) # mean squared errors
                 RMSE = np.sqrt(MSE) # Root Mean Squared Error, RMSE
+
+                # ss_res = np.sum(residuals**2)
+                # ss_tot = np.sum((yData - np.mean(yData))**2)
+                # Rsquared = 1 - (ss_res / ss_tot)
+
                 Rsquared = 1.0 - (np.var(absError) / np.var(yData))
+
                 IC50 = 10**fittedParameters[2]*1000000
                 pIC50= -np.log10(IC50/1000000)
 
@@ -309,13 +346,19 @@ def fit_scipy_curves(cmpds, raw, graphcol, targs=['PARP1','PARP2'], init=np.arra
                 # print(f'{targ} {cmpd} fit failed')
                 allparams[targ+"_"+str(cmpd)]=[np.nan]*8+[f'Fit FAILED with SciPy{bcomm}']
 
+    fit_cols=['top','bottom','LogIC50','hill','RMSE','R^2','IC50','pIC50','notes']
+    if not allparams:  # every compound/target pair had no raw rows: empty result, same columns
+        return pd.DataFrame(columns=['Compound']+fit_cols+['Target','relation','hitc'])
     df=pd.DataFrame.from_dict(allparams).T
-    df.columns=['top','bottom','LogIC50','hill','RMSE','R^2','IC50','pIC50','notes']
+    df.columns=fit_cols
     # df.columns=['SciPy_'+col for col in df.columns]
     df.hill=df.hill*-1
     df=df.reset_index()
     df=df.rename(columns={'index':'Compound'})
-    df[['Target','Compound']]=df.Compound.str.split('_', expand=True)
+    # print(df.Compound.unique())
+    df[['Target','Compound']]=df.Compound.str.split('_', n=1, expand=True)
+    # print(df.Target.unique())
+    # print(df.Target.nunique())
     # df.Compound=df.Compound.astype(int)
     df['relation']=np.nan
     df['hitc']=[1 if 'succeeded' in x else 0 for x in df.notes]
