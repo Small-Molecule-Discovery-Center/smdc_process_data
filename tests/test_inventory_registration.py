@@ -541,3 +541,16 @@ def test_remap_then_stage_drops_empty_and_control_wells(profile, src_size, dest_
     assert out["IW_COORDINATES"].is_unique
     assert out["IW_IP_ID"].eq(5001).all()
     assert out["IW_BARCODE"].isna().all()                              # tubes don't carry over
+
+
+def test_stage_remapped_wells_does_not_need_destination_barcode():
+    # Daughter barcodes are no longer read here, so IP_GRID_NUM + IP_ID is enough.
+    parents = ["P1", "P2", "P3", "P4"]
+    remapped = ir.remap_wells_by_quadrant(
+        _mother_wells(parents, 96), dest_size=384, destination_plate_names=["D1"],
+        source_plate_col="IP_GRID_NUM", profile="interleave", source_plate_order=parents,
+        plates_per_destination=4)
+    dest = pd.DataFrame({"IP_GRID_NUM": ["D1"], "IP_ID": [5001]})
+    out = ir.stage_remapped_wells(
+        remapped, destination_plate_ids=dest, parent_to_daughter={i: 5001 for i in range(1001, 1005)})
+    assert len(out) == remapped["IW_ICL_ID"].notna().sum() and out["IW_IP_ID"].eq(5001).all()

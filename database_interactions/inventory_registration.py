@@ -1337,7 +1337,7 @@ def stage_remapped_wells(
     stage_daughter_wells).
     """
     validate_required_columns(remapped_wells, ["IW_ID", "IW_IP_ID", dest_plate_col], "remapped wells")
-    validate_required_columns(destination_plate_ids, ["IP_GRID_NUM", "IP_ID", "IP_BARCODE"], "destination plate dataframe")
+    validate_required_columns(destination_plate_ids, ["IP_GRID_NUM", "IP_ID"], "destination plate dataframe")
     destination_to_id = dict(zip(destination_plate_ids["IP_GRID_NUM"].astype(str), destination_plate_ids["IP_ID"]))
     translated_overrides: dict[str, Any] = {}
     for column, value in (well_overrides or {}).items():
