@@ -91,3 +91,10 @@ def test_reports_go_to_the_common_folder(tmp_path):
     folders = [str(tmp_path / '1_test' / 'toload_0' / d) for d in ['20260101', '20260102']]
     assert cg.check_upload_folder(folders).empty
     assert (tmp_path / '1_test' / 'folder_summary.csv').exists()
+
+
+def test_arbitrary_filenames_in_barcode_order_are_ok(tmp_path):
+    # Names that don't identify plates say nothing about order; barcodes decide.
+    _files(tmp_path, ['P1', 'P2'], {'a.csv': ['P1'], 'b.csv': ['P2']})
+    out = cg.check_upload_folder(str(tmp_path))
+    assert out.verdict.tolist() == ['REVIEW']  # a look, not ORDER_MISMATCH

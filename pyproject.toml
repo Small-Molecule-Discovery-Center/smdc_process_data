@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "smdc-data-proc"
 version = "0.1.0.dev1"
 description = "SMDC laboratory data processing utilities"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 # humanize, matplotlib and seaborn are imported at the top of plate_maps.py,
 # openpyxl reads the plate-map workbooks and scipy is needed by plot_curves,
 # so a plain `uv sync` or `pip install -e .` covers the upload notebooks.

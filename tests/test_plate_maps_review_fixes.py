@@ -118,6 +118,33 @@ def test_clean_up_keeps_original_when_the_move_fails(tmp_path, monkeypatch):
     assert (share / 'x.csv').read_text() == 'original'
 
 
+def test_clean_up_keeps_original_whose_own_copy_is_missing(tmp_path, monkeypatch):
+    # Two originals share a name; only the one whose copy reached loaded/ goes.
+    share = tmp_path / 'share'
+    (share / 'a').mkdir(parents=True)
+    (share / 'b').mkdir()
+    (share / 'a' / 'run.csv').write_text('a')
+    (share / 'b' / 'run.csv').write_text('b')
+    assay = _batch(tmp_path / 'out', 'grid_num\nP1\n')
+    (assay / 'toload_0' / '20260101' / 'run.csv').write_text('a')
+    info = pd.DataFrame({'Raw_assay_ID': ['2863', '2863'], 'Assay_name': ['test', 'test'],
+                         'Date_of_screen': ['20260101', '20260102'],
+                         'Raw_data_file': ['a/run.csv', 'b/run.csv'], 'Grid_num': ['P1', 'P2']})
+    monkeypatch.setattr(pm, '_read_info_sheet', lambda infile: (None, info))
+    pm.clean_up_folders('info.xlsx', basedir=str(tmp_path / 'out'), delete_orig=True, share_root=str(share))
+    assert not (share / 'a' / 'run.csv').exists()
+    assert (share / 'b' / 'run.csv').read_text() == 'b'
+
+
+def test_clean_up_stops_if_the_copy_is_incomplete(tmp_path, monkeypatch):
+    share, assay = _batch_with_original(tmp_path, monkeypatch)
+    monkeypatch.setattr(pm, '_copy_file', lambda src, dst: None)  # copies nothing, silently
+    with pytest.raises(OSError, match='incomplete'):
+        pm.clean_up_folders('info.xlsx', basedir=str(tmp_path / 'out'), delete_orig=True, share_root=str(share))
+    assert (assay / 'toload_0' / '20260101' / 'x.csv').exists()
+    assert (share / 'x.csv').read_text() == 'original'
+
+
 # --- plate-map fixtures -------------------------------------------------------
 import io
 import string

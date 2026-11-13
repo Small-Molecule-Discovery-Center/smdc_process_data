@@ -573,7 +573,12 @@ def audit_folder(folder: str, grid_path: str, min_score: float, strict_dates: bo
         notes.append("timestamps unparseable, acquisition order unconfirmed")
 
     barcode_order_bad = (not all_barcodes_blank) and res.order != "in order"
-    filename_order_bad = filename_order_check and res.filename_order != "in order"
+    # Filenames only count as evidence of order when every one of them
+    # confidently names a grid_num plate. Arbitrary names (a.csv, b.csv) say
+    # nothing either way, so the parsed barcode order decides instead.
+    filenames_identify_plates = bool(filename_pairs) and not filename_unmatched
+    filename_order_bad = (filename_order_check and filenames_identify_plates
+                          and res.filename_order != "in order")
     # Multi-plate exports legitimately have fewer files than grid entries; the
     # plate-count check covers them, so only compare file counts when each file
     # is meant to hold one plate.
