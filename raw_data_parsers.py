@@ -875,8 +875,15 @@ def trim_csv_columns_in_file(csv_path: str, ncols: int = 25) -> Tuple[bool, int]
     return (True, trimmed)
 
 
+_UNPARSEABLE = "the file can't be parsed as an EnVision export"
+
+
 def _wells_per_read(csv_path, plate_type='384'):
-    """Filled-well count of each read (measurement block) in one EnVision CSV."""
+    """Filled-well count of each read (measurement block) in one EnVision CSV.
+
+    Returns None when the file can't be parsed at all. Callers must report
+    that as a problem: an empty list would read as "nothing wrong".
+    """
     import tempfile, shutil
     with tempfile.TemporaryDirectory() as tmp:
         shutil.copy(csv_path, os.path.join(tmp, os.path.basename(csv_path)))
@@ -884,7 +891,7 @@ def _wells_per_read(csv_path, plate_type='384'):
             parsed = parse_envision_files(plate_type=plate_type, load_dir=tmp)
         except Exception as e:  # unreadable file: say so rather than stop the tidy
             logger.warning(f"Could not parse {csv_path} to count wells per read: {e}")
-            return []
+            return None
     meas = [c for c in parsed.columns if c not in ('plate', 'row', 'col', 'well', 'Well')]
     return [int(parsed[c].notna().sum()) for c in meas]
 
@@ -1066,9 +1073,12 @@ def tidy_envision_files(paths, ncols: int = None) -> pd.DataFrame:
             raise PermissionError(file_in_use_message(p)) from e
         counts = _wells_per_read(p, plate_type or '384')
         problems = check_envision_csv(p, plate_type)
+        if counts is None and _UNPARSEABLE not in problems:
+            problems.insert(0, _UNPARSEABLE)
         rows.append({'file': p, 'rows trimmed': trimmed, 'blocks re-arranged': arranged,
                      "Z' blocks filled": zblocks,
-                     'wells per read': '/'.join(map(str, counts)), 'reads differ': len(set(counts)) > 1,
+                     'wells per read': '/'.join(map(str, counts or [])),
+                     'reads differ': counts is not None and len(set(counts)) > 1,
                      'problems': '; '.join(problems)})
     cols = ['file', 'rows trimmed', 'blocks re-arranged', "Z' blocks filled", 'wells per read',
             'reads differ', 'problems']
@@ -1267,7 +1277,9 @@ def check_envision_csv(csv_path: str, plate_type: str = None, max_problems: int 
 
     problems += _block_layout_problems(lines, nrows)
     counts = _wells_per_read(csv_path, plate_type)
-    if len(set(counts)) > 1:
+    if counts is None:
+        problems.append(_UNPARSEABLE)
+    elif len(set(counts)) > 1:
         problems.append(f"reads have data in different numbers of wells ({'/'.join(map(str, counts))}); "
                         "Pipeline Pilot's Merge Plates fails on this ('Well property size mismatch')")
     return problems

@@ -137,13 +137,13 @@ out2 = pm.handle_zero_concentrations(pd.DataFrame({'[compound] uM': [10.0, 1.0]}
 assert len(out2) == 2
 print("  no zeros -> unchanged")
 
-# read_platemap_block now rejects a bad size instead of UnboundLocalError.
-try:
-    pm.read_platemap_block(plate_map=pd.DataFrame(), block=0, size=1596)
-except ValueError as e:
-    print(f"\nread_platemap_block(size=1596) -> ValueError: {e}")
-
 print("\nALL SMOKE TESTS PASSED")
+
+
+def test_read_platemap_block_rejects_bad_size():
+    # A bad size must raise ValueError, not UnboundLocalError or a silent pass.
+    with pytest.raises(ValueError, match='1596'):
+        pm.read_platemap_block(plate_map=pd.DataFrame(), block=0, size=1596)
 
 
 def _dr_folder(tmp_path):

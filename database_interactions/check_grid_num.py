@@ -578,17 +578,21 @@ def audit_folder(folder: str, grid_path: str, min_score: float, strict_dates: bo
     # plate-count check covers them, so only compare file counts when each file
     # is meant to hold one plate.
     filename_count_bad = filename_order_check and len(entries) != len(res.envision_files)
+    # The filename isn't part of the upload contract (step 2 keeps whatever
+    # name the scientist gave the export), so a filename that doesn't look
+    # like its plate's barcode is worth a look but is not a mismatch: the
+    # parsed barcode vs grid_num check above is what decides the order.
     barcode_filename_bad = barcode_filename_failed
 
     # Barcode blanks mean the barcode-based checks have nothing to evaluate;
     # they must not suppress an independent filename/grid_num failure.
-    if filename_order_bad or filename_count_bad or barcode_filename_bad or barcode_order_bad:
+    if filename_order_bad or filename_count_bad or barcode_order_bad:
         res.verdict = "ORDER_MISMATCH"
     elif all_barcodes_blank:
         res.verdict = "BARCODES_BLANK"
     elif not unmatched and len(entries) == len(plates):
         dates_bad = res.dates_ok is False and strict_dates
-        res.verdict = "REVIEW" if (weak or dates_bad) else "OK"
+        res.verdict = "REVIEW" if (weak or dates_bad or barcode_filename_bad) else "OK"
     elif res.n_matched == 0:
         res.verdict = "NO_MATCH"
     else:
@@ -601,7 +605,7 @@ def audit_folder(folder: str, grid_path: str, min_score: float, strict_dates: bo
     if filename_order_bad:
         notes.insert(0, f"grid_num order does not match filename order: {res.filename_order}")
     if barcode_filename_bad:
-        notes.append(f"single-file barcode does not match filename: {res.barcode_filename_match}")
+        notes.append(f"filename doesn't look like its plate barcode (check it's the right file): {res.barcode_filename_match}")
     if filename_count_bad:
         notes.append(f"count mismatch: {len(entries)} grid entries vs {len(res.envision_files)} EnVision CSV filenames")
     if filename_order_check and filename_unmatched:
