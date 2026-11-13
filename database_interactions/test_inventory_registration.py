@@ -516,3 +516,28 @@ def test_prepare_inventory_frames_drops_empty_wells_and_does_not_pad():
     )
     assert len(plates) == 1
     assert wells["IW_COORDINATES"].tolist() == ["A01", "A03"]
+
+
+@pytest.mark.parametrize("profile, src_size, dest_size", [("interleave", 96, 384), ("quadrant", 384, 1536)])
+def test_remap_then_stage_drops_empty_and_control_wells(profile, src_size, dest_size):
+    # End to end: remap 4 parents, then stage the daughter wells. Wells with no
+    # lot (empty, or DMSO-only controls) must not reach the daughter plate, and
+    # every lot-bearing well must land exactly once with its own IW_ICL_ID.
+    parents = ["P1", "P2", "P3", "P4"]
+    mothers = _mother_wells(parents, src_size)
+    mothers["IW_BARCODE"] = "T" + mothers["IW_ID"].astype(str)        # scanned tubes
+    empty = mothers["IW_COORDINATES"].isin(["A01", "B02", "H12"])      # controls / empty
+    mothers.loc[empty, "IW_ICL_ID"] = np.nan
+    remapped = ir.remap_wells_by_quadrant(
+        mothers, dest_size=dest_size, destination_plate_names=["D1"], source_plate_col="IP_GRID_NUM",
+        profile=profile, source_plate_order=parents, plates_per_destination=4)
+    dest = pd.DataFrame({"IP_GRID_NUM": ["D1"], "IP_ID": [5001], "IP_BARCODE": ["D1-AC01"]})
+    out = ir.stage_remapped_wells(
+        remapped, destination_plate_ids=dest, parent_to_daughter={i: 5001 for i in range(1001, 1005)})
+    kept = remapped[remapped["IW_ICL_ID"].notna()]
+    assert len(kept) < len(remapped) and len(out) == len(kept)
+    assert out["IW_ICL_ID"].notna().all()
+    assert sorted(out["IW_ICL_ID"]) == sorted(kept["IW_ICL_ID"])
+    assert out["IW_COORDINATES"].is_unique
+    assert out["IW_IP_ID"].eq(5001).all()
+    assert out["IW_BARCODE"].isna().all()                              # tubes don't carry over

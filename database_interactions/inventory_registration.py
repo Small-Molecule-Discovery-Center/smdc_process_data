@@ -1255,12 +1255,17 @@ def remap_384_to_1536(
     layout_profile: str = "quadrant",
     custom_layout_path: str | Path | None = None,
     dest_plate_col: str = "IW_IP_ID",
-    source_plate_col: str = "IW_BARCODE",
+    source_plate_col: str,
     source_well_col: str = "IW_COORDINATES",
     source_plate_order: Mapping[Any, Sequence[str]] | Sequence[str] | None = None,
     keep_original_in_notes: bool = True,
 ) -> pd.DataFrame:
     """Back-compat wrapper: remap grouped 384-well rows into 1536 coordinates.
+
+    ``source_plate_col`` names the column that identifies each parent plate (for
+    example ``IP_GRID_NUM`` or ``IP_BARCODE`` joined from INV_PLATE). It has no
+    default: it used to default to ``IW_BARCODE``, which is a per-well tube
+    barcode, not a plate identifier, and is empty on most plates.
 
     Thin adapter over :func:`remap_wells_by_quadrant`.  Input is one dataframe of
     source 384-well rows where ``dest_plate_col`` already identifies the destination
