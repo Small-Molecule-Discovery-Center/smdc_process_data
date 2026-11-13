@@ -924,11 +924,28 @@ def _row_labels(n):
     return (letters + ['A' + x for x in letters])[:n]
 
 
+def _infer_platemap_size(plate_map):
+    """ 96, 384 or 1536 from the row labels in a plate map sheet's first column.
+
+    The largest label present decides: AF only exists on 1536, P on 384 and
+    up, H on 96 and up. Falls back to 384, which then fails with
+    MissingBlockError if the sheet has no complete A-P block.
+    """
+    labels = set(plate_map.iloc[:, 0].dropna().astype(str).str.strip().str.upper())
+    if 'AF' in labels:
+        return 1536
+    if 'P' in labels:
+        return 384
+    if 'H' in labels:
+        return 96
+    return 384
+
+
 class MissingBlockError(ValueError):
     """The plate map sheet has fewer complete blocks than the one asked for."""
 
 
-def read_platemap_block(plate_map=None, block=0, value_name='SMDC_ID', size=384):
+def read_platemap_block(plate_map=None, block=0, value_name='SMDC_ID', size=None):
     """ Read one grid block out of a block-formatted plate map sheet.
 
     THE BLOCK CONVENTION (this is the thing to understand about the workbook):
@@ -951,7 +968,8 @@ def read_platemap_block(plate_map=None, block=0, value_name='SMDC_ID', size=384)
         plate_map (DataFrame): sheet read with header=None-ish semantics; the
             first column holds row letters, the rest hold values.
         block (int): which block, 0 at the top.
-        size (int): 96, 384 or 1536.
+        size (int, optional): 96, 384 or 1536. Default None: infer it from the
+            row labels (AF means 1536, else P means 384, else H means 96).
     Returns:
         df (DataFrame): long-format block data with columns row, col, value_name.
             col is a zero-padded 2-char string so `row + col` reconstructs the
@@ -960,6 +978,8 @@ def read_platemap_block(plate_map=None, block=0, value_name='SMDC_ID', size=384)
     NOTE: `plate_rows` is rebound here as an int, shadowing the module-level
     list of row labels.
     """
+    if size is None:
+        size = _infer_platemap_size(plate_map)
     if size == 384:
         plate_cols = 24
         plate_rows = 16
@@ -1271,7 +1291,10 @@ def _copy_tree(src, dst, ignore=None):
     the end if that is refused, which a WSL network mount does. Directory
     timestamps don't matter here, so they aren't copied.
     """
-    for root, dirs, files in os.walk(src):
+    def fail(err):  # an unreadable folder must stop the copy, not be skipped
+        raise err
+
+    for root, dirs, files in os.walk(src, onerror=fail):
         skip = set(ignore(root, dirs + files)) if ignore else set()
         dirs[:] = [d for d in dirs if d not in skip]
         target = os.path.join(dst, os.path.relpath(root, src))
@@ -1279,6 +1302,23 @@ def _copy_tree(src, dst, ignore=None):
         for name in files:
             if name not in skip:
                 _copy_file(os.path.join(root, name), os.path.join(target, name))
+
+
+def _missing_from_copy(src, dst, ignore=None):
+    """Files under src (minus ignored ones) that are absent from dst or differ
+    in size there. Empty means dst holds a full copy."""
+    missing = []
+    for root, dirs, files in os.walk(src, onerror=lambda err: missing.append(str(err))):
+        skip = set(ignore(root, dirs + files)) if ignore else set()
+        dirs[:] = [d for d in dirs if d not in skip]
+        for name in files:
+            if name in skip:
+                continue
+            a = os.path.join(root, name)
+            b = os.path.join(dst, os.path.relpath(a, src))
+            if not os.path.isfile(b) or os.path.getsize(a) != os.path.getsize(b):
+                missing.append(a)
+    return missing
 
 
 def _read_info_sheet(infile):
@@ -2632,24 +2672,33 @@ def clean_up_folders(infile=None, basedir='./', delete_orig=False, share_root=No
         logger.info(f'{oldpath} -> {newpath}')
         os.makedirs(os.path.dirname(newpath), exist_ok=True)
         _copy_tree(oldpath, newpath, ignore=ignore_files)
-        shutil.rmtree(oldpath, ignore_errors=True)
+        missing = _missing_from_copy(oldpath, newpath, ignore=ignore_files)
+        if missing:
+            raise OSError(f"Copy of {oldpath} to {newpath} is incomplete, so nothing was removed from "
+                          "toload and no original was deleted. Missing or different: " + ", ".join(missing[:10]))
+        shutil.rmtree(oldpath)  # raises on failure; the full copy is already in loaded/
 
     # Delete the originals only after every move above has finished, and only
-    # when a copy with the same name is now in loaded/. Any failure above
-    # raises before this point, so the originals stay put. (Contents aren't
-    # compared: the tidy step may have edited the toload copy on purpose.)
+    # when this original's own copy is in loaded/ (the same assay folder, date
+    # and file name the pipeline copied it to). Any failure above raises
+    # before this point, so the originals stay put. Contents aren't compared:
+    # the tidy step may have edited the toload copy on purpose.
     if delete_orig:
-        loaded_names = set()
-        for _, newpath in moves:
-            for _root, _dirs, files in os.walk(newpath):
-                loaded_names.update(files)
-        for rdf in info.Raw_data_file.unique():
+        root = share_root or default_share_root()
+        copies = {}
+        for df, _rpt in _iter_load_groups(info):  # the rows the pipeline built folders from
+            for _, r in df.iterrows():
+                rel = _normalize_share_path(r.Raw_data_file)
+                copies.setdefault(rel, set()).add(os.path.join(
+                    basedir, _assay_dir_name(r.Raw_assay_ID, r.Assay_name),
+                    'loaded', str(int(float(r.Date_of_screen))), rel.rsplit('/', 1)[-1]))
+        for rel, expected in copies.items():
             # Same path normalisation the pipeline used to find the file.
-            rdf = os.path.join(share_root or default_share_root(), _normalize_share_path(rdf))
+            rdf = os.path.join(root, rel)
             if not os.path.exists(rdf):
                 continue
-            if os.path.basename(rdf) not in loaded_names:
-                logger.warning(f"Not deleting {rdf}: no copy of it is in loaded/")
+            if not any(os.path.isfile(c) for c in expected):
+                logger.warning(f"Not deleting {rdf}: its copy isn't in loaded/ (looked for {sorted(expected)})")
                 continue
             logger.info(f"deleting original {rdf}")
             # os.remove rather than os.system("rm ..."): no shell involved,
