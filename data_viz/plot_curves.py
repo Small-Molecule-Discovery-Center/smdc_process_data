@@ -76,10 +76,13 @@ def plot_pct_inhib_curves(compound, raw, curve, targs=['PARP1','PARP2'], save_fi
         if len(ppr)==0:
             continue
         if 'RealPlate' in ppr.columns:
+            # Match the assay endpoint (aeid) too when the data has one; older
+            # inputs without an aeid column keep the plate + target selection.
+            same_aeid = raw.aeid.isin(ppr.aeid.unique()) if 'aeid' in raw.columns else True
             if fit=="DBMAD":
-                plateNegCtrl=raw[(raw.RealPlate.isin(ppr.RealPlate.unique()))&(raw.Well_Type=='negativeControl')&(raw.Target==targ)&(raw.aeid.isin(ppr.aeid.unique()))]
+                plateNegCtrl=raw[(raw.RealPlate.isin(ppr.RealPlate.unique()))&(raw.Well_Type=='negativeControl')&(raw.Target==targ)&same_aeid]
             elif fit=="TBMAD":
-                plateNegCtrl=raw[(raw.RealPlate.isin(ppr.RealPlate.unique()))&(raw.logconc.isin(L2concs))&(raw.Target==targ)&(raw.aeid.isin(ppr.aeid.unique()))]
+                plateNegCtrl=raw[(raw.RealPlate.isin(ppr.RealPlate.unique()))&(raw.logconc.isin(L2concs))&(raw.Target==targ)&same_aeid]
         elif fit=="DBMAD":
             plateNegCtrl=raw[(raw.Plate.isin(ppr.Plate.unique()))&(raw.Well_Type=='negativeControl')&(raw.Target==targ)]
         elif fit=="TBMAD":
@@ -103,7 +106,9 @@ def plot_pct_inhib_curves(compound, raw, curve, targs=['PARP1','PARP2'], save_fi
             if (ppc.hitc.iloc[0]==1) and ('succeeded' in ppc.notes.iloc[0]):
                 # try:
                 x = np.linspace(logconcmin, logconcmax, 1000)
-                y = ppc.bottom.iloc[0] + ((ppc.top.iloc[0] - ppc.bottom.iloc[0])/(1+10**((ppc.LogIC50.iloc[0] - x)*float(ppc.hill.iloc[0]))))
+                # fit_scipy_curves gives LogIC50; tcpl_mc5_to_curve gives only pIC50 (= -LogIC50).
+                log_ic50 = ppc.LogIC50.iloc[0] if 'LogIC50' in ppc.columns else -ppc.pIC50.iloc[0]
+                y = ppc.bottom.iloc[0] + ((ppc.top.iloc[0] - ppc.bottom.iloc[0])/(1+10**((log_ic50 - x)*float(ppc.hill.iloc[0]))))
                 ax[i].plot(x,y,c=pal[-1])
                 # except:
                 #     pass
@@ -341,8 +346,11 @@ def fit_scipy_curves(cmpds, raw, graphcol, targs=['PARP1','PARP2'], init=np.arra
                 # print(f'{targ} {cmpd} fit failed')
                 allparams[targ+"_"+str(cmpd)]=[np.nan]*8+[f'Fit FAILED with SciPy{bcomm}']
 
+    fit_cols=['top','bottom','LogIC50','hill','RMSE','R^2','IC50','pIC50','notes']
+    if not allparams:  # every compound/target pair had no raw rows: empty result, same columns
+        return pd.DataFrame(columns=['Compound']+fit_cols+['Target','relation','hitc'])
     df=pd.DataFrame.from_dict(allparams).T
-    df.columns=['top','bottom','LogIC50','hill','RMSE','R^2','IC50','pIC50','notes']
+    df.columns=fit_cols
     # df.columns=['SciPy_'+col for col in df.columns]
     df.hill=df.hill*-1
     df=df.reset_index()

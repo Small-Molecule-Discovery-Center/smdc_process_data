@@ -4,10 +4,12 @@
     import plate_maps as pm    # database_interactions/
     import plot_curves as pc   # data_viz/
 
-The modules in database_interactions/ and data_viz/ are plain scripts, not a
-package, so `pip install -e .` cannot install them under their own names.
-This module is installed (see pyproject.toml) and adds those folders, found
-relative to this file, to sys.path. Nothing is hard-coded to one machine.
+Legacy shim for old notebooks that use flat names. database_interactions/ and
+data_viz/ are installed packages (see pyproject.toml), so new code should use
+`from database_interactions import plate_maps` and `from data_viz import
+plot_curves` instead. Importing this module adds those two folders, found
+relative to this file, to sys.path so the flat `import plate_maps` /
+`import plot_curves` still work. Nothing is hard-coded to one machine.
 """
 import sys
 from pathlib import Path
