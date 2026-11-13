@@ -725,6 +725,17 @@ def build_well_rows(
     return frame
 
 
+def drop_empty_wells(wells: pd.DataFrame, compound_col: str = "IW_ICL_ID") -> pd.DataFrame:
+    """Drop wells with no compound (``compound_col`` null): empty wells aren't inserted.
+
+    A frame without ``compound_col`` is returned unchanged, since it can't say
+    which wells are empty.
+    """
+    if compound_col not in wells.columns:
+        return wells
+    return wells[wells[compound_col].notna()].reset_index(drop=True)
+
+
 def fill_missing_wells(
     wells: pd.DataFrame,
     *,
@@ -1021,7 +1032,7 @@ def prepare_inventory_frames(
     engine: Engine | None = None,
     plate_barcode_suffix: str | None = None,
     require_plate_ids: bool = True,
-    fill_missing: bool = True,
+    fill_missing: bool = False,
     plate_schema_columns: Sequence[str] | None = None,
     well_schema_columns: Sequence[str] | None = None,
     require_concentration: bool | None = None,
@@ -1040,6 +1051,10 @@ def prepare_inventory_frames(
     matrix-tube barcode: it comes only from an ``IW_BARCODE`` source column (or an
     explicit ``well_inputs`` entry), is optional, and is never filled from
     ``IP_BARCODE``. Padded empty wells get no barcode.
+
+    Empty wells are not inserted: rows with no ``IW_ICL_ID`` (no compound) are
+    dropped, and plates are not padded to full geometry unless
+    ``fill_missing=True`` is passed explicitly (Amanda, Nov 2026).
     """
     _assert_unique_columns(source)
     grid_src = _resolve_source_column(plate_inputs, "IP_GRID_NUM", source)
@@ -1103,6 +1118,7 @@ def prepare_inventory_frames(
         missing = wells.loc[wells["IW_IP_ID"].isna(), grid_src].drop_duplicates().tolist()
         raise ValueError(f"Missing plate lookup values for: {missing}")
 
+    wells = drop_empty_wells(wells)
     if fill_missing:
         wells = fill_missing_wells(wells, plate_col=grid_src, well_col="IW_COORDINATES", size=size)
 
@@ -1693,9 +1709,12 @@ def stage_daughter_wells(
     the scanned matrix-tube barcode, so it is not copied from the parent: a daughter
     well plate has no tube barcodes. It is empty unless ``well_inputs`` /
     ``well_overrides`` supply one. It is never filled from ``IP_BARCODE``.
-    ``IW_ICL_ID`` is never synthesized or replaced.
+    ``IW_ICL_ID`` is never synthesized or replaced, and parent wells without one
+    (empty wells) are dropped rather than copied.
     """
     validate_required_columns(source_wells, [id_col, ip_id_col], "source wells")
+    # Empty parent wells (no compound) are not copied to the daughter plate.
+    source_wells = drop_empty_wells(source_wells)
     wells = source_wells.copy()
     parent_ip_ids = wells[ip_id_col].copy()
     wells[source_id_col] = wells[id_col]

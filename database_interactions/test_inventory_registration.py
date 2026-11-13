@@ -185,7 +185,7 @@ def test_copy_daughter_plates():
     assert out["IP_INS_DATE"].notna().all()
 
 
-def test_copy_daughter_wells_overrides_only_lot_bearing():
+def test_copy_daughter_wells_copies_only_lot_bearing():
     source = pd.DataFrame(
         {
             "IW_ID": [1, 2, 3],
@@ -200,13 +200,11 @@ def test_copy_daughter_wells_overrides_only_lot_bearing():
         source, new_ip_id_map={1001: 5001}, vol_ul=5, conc_um=10000, ins_by=569
     )
     assert "IW_ID" not in out.columns
-    assert out["IW_SOURCE_ID"].tolist() == [1, 2, 3]
+    # The empty parent well (IW_ID 2, no IW_ICL_ID) is not copied at all.
+    assert out["IW_SOURCE_ID"].tolist() == [1, 3]
     assert out["IW_IP_ID"].eq(5001).all()
-    # Only lot-bearing wells (rows 0 and 2) get vol/conc.
-    assert out.loc[[0, 2], "IW_VOL_UL"].eq(5).all()
-    assert out.loc[[0, 2], "IW_CONC_UM"].eq(10000).all()
-    assert pd.isna(out.loc[1, "IW_VOL_UL"])
-    assert pd.isna(out.loc[1, "IW_CONC_UM"])
+    assert out["IW_VOL_UL"].eq(5).all()
+    assert out["IW_CONC_UM"].eq(10000).all()
 
 
 def test_copy_daughter_wells_raises_on_unmapped_plate():
@@ -505,3 +503,16 @@ def test_load_layout_map_strips_bom():
     m = ir.load_layout_map(MAP_DIR / "map_96_to_384_interleaved.csv")
     assert "source_well" in m.columns
     assert "﻿source_well" not in m.columns
+
+
+def test_prepare_inventory_frames_drops_empty_wells_and_does_not_pad():
+    src = pd.DataFrame({"Plate": ["P1", "P1", "P1"], "Well": ["A01", "A02", "A03"], "IW_ICL_ID": [11, None, 13]})
+    plates, wells = ir.prepare_inventory_frames(
+        src,
+        plate_inputs={"IP_GRID_NUM": "Plate", "IP_ICO_ID": 1, "IP_COLLECTION": "c"},
+        well_inputs={"IW_COORDINATES": "Well"},
+        size=96,
+        require_plate_ids=False,
+    )
+    assert len(plates) == 1
+    assert wells["IW_COORDINATES"].tolist() == ["A01", "A03"]

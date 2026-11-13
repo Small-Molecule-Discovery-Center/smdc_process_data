@@ -62,11 +62,11 @@ def test_blank_volume_needs_final_conc_on_that_row():
     assert pd.isna(w.loc[1, "IW_VOL_UL"])
 
 
-def test_wells_without_compound_are_exempt():
+def test_wells_without_compound_are_exempt_and_not_inserted():
     src = _src(um=[10.0, 10.0, np.nan, np.nan], vol=[20, 20, np.nan, np.nan])
     src.loc[[2, 3], "lot"] = np.nan  # controls / empty
-    w = _run(src, IW_CONC_UM="um", IW_VOL_UL="vol")
-    assert len(w) == 4
+    w = _run(src, IW_CONC_UM="um", IW_VOL_UL="vol")  # no conc/vol error for them...
+    assert len(w) == 2                                 # ...and they aren't inserted
 
 
 def test_require_flag_modes():
