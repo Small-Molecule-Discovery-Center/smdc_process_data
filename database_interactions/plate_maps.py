@@ -2680,6 +2680,13 @@ def clean_up_folders(infile=None, basedir='./', delete_orig=False, share_root=No
             raise OSError(f"Copy of {oldpath} to {newpath} is incomplete, so nothing was removed from "
                           "toload and no original was deleted. Missing or different: " + ", ".join(missing[:10]))
         shutil.rmtree(oldpath)  # raises on failure; the full copy is already in loaded/
+        if os.path.exists(oldpath):
+            # On an SMB share the server can accept the delete but keep the folder
+            # ("delete pending", shown in Finder with a red no-entry badge) while
+            # another program, e.g. Pipeline Pilot or a Finder window, has it open.
+            # It goes away once that program lets go of it.
+            logger.warning(f"{oldpath} is empty but still listed on the share. Close anything "
+                           "that has it open (Pipeline Pilot, Finder windows); it should then disappear.")
 
     # Delete the originals only after every move above has finished, and only
     # when this original's own copy is in loaded/ (the same assay folder, date
