@@ -38,9 +38,17 @@ def _files(tmp_path, grid, files):
         (d / name).write_text(blocks)
 
 
-def test_single_plate_file_named_for_another_plate_is_flagged(tmp_path):
+def test_single_plate_file_named_for_another_plate_needs_review(tmp_path):
     # Grid and barcode agree, but the export is named for a different plate.
+    # The name doesn't change what gets uploaded, so ask for a look, not a stop.
     _files(tmp_path, ['P1'], {'Q9.csv': ['P1']})
+    assert cg.check_upload_folder(str(tmp_path)).verdict.tolist() == ['REVIEW']
+
+
+def test_misnamed_files_out_of_grid_order_are_still_a_mismatch(tmp_path):
+    # With several one-plate files the loader pairs them with grid_num in
+    # filename order, so here the names do decide which plate gets which data.
+    _files(tmp_path, ['P1', 'P2'], {'a.csv': ['P2'], 'b.csv': ['P1']})
     assert cg.check_upload_folder(str(tmp_path)).verdict.tolist() == ['ORDER_MISMATCH']
 
 

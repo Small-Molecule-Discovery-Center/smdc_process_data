@@ -90,6 +90,34 @@ def test_clean_up_moves_and_allows_identical_rerun(tmp_path, monkeypatch):
     assert (assay / 'loaded' / '20260101' / 'grid_num.txt').read_text() == 'grid_num\nP1\n'
 
 
+def _batch_with_original(tmp_path, monkeypatch):
+    share = tmp_path / 'share'
+    share.mkdir()
+    (share / 'x.csv').write_text('original')
+    assay = _batch(tmp_path / 'out', 'grid_num\nP1\n')
+    (assay / 'toload_0' / '20260101' / 'x.csv').write_text('tidied copy')
+    monkeypatch.setattr(pm, '_read_info_sheet', lambda infile: (None, _info()))
+    return share, assay
+
+
+def test_clean_up_deletes_original_only_after_the_move(tmp_path, monkeypatch):
+    share, assay = _batch_with_original(tmp_path, monkeypatch)
+    pm.clean_up_folders('info.xlsx', basedir=str(tmp_path / 'out'), delete_orig=True, share_root=str(share))
+    assert (assay / 'loaded' / '20260101' / 'x.csv').read_text() == 'tidied copy'
+    assert not (share / 'x.csv').exists()
+
+
+def test_clean_up_keeps_original_when_the_move_fails(tmp_path, monkeypatch):
+    share, assay = _batch_with_original(tmp_path, monkeypatch)
+
+    def broken_copy(*a, **k):
+        raise OSError('share went away')
+    monkeypatch.setattr(pm, '_copy_tree', broken_copy)
+    with pytest.raises(OSError, match='share went away'):
+        pm.clean_up_folders('info.xlsx', basedir=str(tmp_path / 'out'), delete_orig=True, share_root=str(share))
+    assert (share / 'x.csv').read_text() == 'original'
+
+
 # --- plate-map fixtures -------------------------------------------------------
 import io
 import string

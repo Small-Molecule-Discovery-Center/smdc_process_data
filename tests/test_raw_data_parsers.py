@@ -196,6 +196,19 @@ def test_check_envision_csv_flags_reads_with_different_wells(tmp_path, monkeypat
     assert 'different numbers of wells (253/265/253)' in raw_data_parsers.check_envision_csv(str(f))[0]
 
 
+def test_unparseable_envision_file_is_not_ready(tmp_path, monkeypatch):
+    # A parse failure must show up as a problem, not as "no reads, all fine".
+    def fail(*a, **k):
+        raise ValueError('garbled')
+    monkeypatch.setattr(raw_data_parsers, 'parse_envision_files', fail)
+    f = tmp_path / 'f.csv'
+    f.write_text(_envision_text())
+    assert raw_data_parsers.check_envision_csv(str(f)) == [raw_data_parsers._UNPARSEABLE]
+    out = raw_data_parsers.tidy_envision_files([str(f)])
+    assert out.loc[0, 'problems'] == raw_data_parsers._UNPARSEABLE
+    assert out.loc[0, 'reads differ'] == False  # noqa: E712
+
+
 def test_block_layout_puts_row_a_on_line_12():
     header = [''] + [f'{c:02d}' for c in range(1, 25)]
     block = [['Plate information'], ['Plate', 'Repeat'], ['1', '1'], [],

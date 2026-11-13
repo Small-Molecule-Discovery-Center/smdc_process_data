@@ -445,11 +445,11 @@ def draw_plate_heatmap(barcode='OTPARP1234-Eco1', df=None, wells='Well', values=
 ###############################################################################
 # SECTION 3: HiTS database reads
 #
-# Every query here is an f-string, i.e. string-interpolated rather than
-# parameterised (lookup_lot_by_user is the one exception). That is tolerable
-# because inputs come from the lab's own barcodes, but it means a barcode
-# containing a quote will produce a syntax error at best. If this file is ever
-# pointed at untrusted input, parameterise first.
+# Every query here is a SQLAlchemy text() with bound parameters (:name, and
+# bindparam(..., expanding=True) for IN lists). Never build SQL by putting
+# values into the string with f-strings, % or +, even for barcodes or IDs
+# from the lab's own files: a quote in a value breaks the query, and this
+# code is public. Keep new queries parameterised the same way.
 ###############################################################################
 def make_platemaps_from_barcode(barcode='OTPARP1234-Eco1', outdir='./', cnx=None):
     """
@@ -563,7 +563,7 @@ def make_platemaps_from_barcode(barcode='OTPARP1234-Eco1', outdir='./', cnx=None
 #   lookup_plate_by_lot_num              - you know the compound and its lot
 #   lookup_lot_by_user                   - last resort: newest lot this person made
 ###############################################################################
-def lookup_lot_by_user(ids=['285699', '130958'], users=[("Amanda", "Paulson")]):
+def lookup_lot_by_user(ids, users):
     """ Find the most recent (highest) lotnum that the user has created for their compound.
 
     Last-resort fallback: use only when nothing else identifies the lot, since
@@ -572,12 +572,18 @@ def lookup_lot_by_user(ids=['285699', '130958'], users=[("Amanda", "Paulson")]):
 
     Args:
         ids (list of strings): The list of SMDC IDs to look up. Integers, but in string form.
-        users (list of string tuples): The list of users in the form ("FirstName","LastName")
+        users (list of string tuples): The list of users in the form ("FirstName","LastName").
+            Required: there is no default person.
     Returns:
         fullresults (DataFrame): the SMDC IDs and Lots as two columns in a df.
             One block of rows per user, concatenated; if two users both made
             lots of the same compound you get duplicate SMDC_IDs.
     """
+    if not users:
+        raise ValueError(
+            "Some compounds have no lot, and the last-resort lookup (newest lot registered by a person) "
+            "needs to know who registered them. Pass users=[(\"First\", \"Last\")] (USERS in the notebook), "
+            "or give those wells a lot or source plate in the plate map.")
     # pull data from hits
     cnx = _connect()
     res = []
@@ -1821,7 +1827,7 @@ def get_source_plate_info(row, dids, maps, cnx, replace_vals):
                     replace_vals=replace_vals
                 )
                 dids = dids.merge(plates, how='left')
-            except DBAPIError:
+            except (DBAPIError, ConnectionError):
                 raise  # a database/connection error must stop the run, not become 'NA'
             except Exception as e:
                 logger.warning(f"Error looking up plates by lot num: {e}")
@@ -2208,7 +2214,7 @@ def handle_zero_concentrations(dids):
 
 
 ###############################################################################
-def make_dr_platemaps_and_folders(infile='', users=[("Amanda", "Paulson")], basedir='./', dose_response=True,
+def make_dr_platemaps_and_folders(infile='', users=None, basedir='./', dose_response=True,
                                   replace_dict=None, control_dict=None, share_root=None):
     """
     Create an excel file with dose response plate information for DR assay upload
@@ -2217,7 +2223,9 @@ def make_dr_platemaps_and_folders(infile='', users=[("Amanda", "Paulson")], base
     with additional data including source plate barcodes, assay IDs and dates.
     Args:
         infile (str): Path to the input file containing plate information.
-        users (list of tuples): List of user names in the form of (FirstName, LastName).
+        users (list of tuples): List of user names in the form of (FirstName, LastName),
+            used only for the last-resort lot lookup. No default: if that lookup is
+            needed and users is empty, the run stops with a ValueError.
         basedir (str): Place to move data to and create folders in.
         dose_response (bool): Whether to create dose response platemaps. If
             False, folders are still created and raw data still copied; only
@@ -2618,18 +2626,6 @@ def clean_up_folders(infile=None, basedir='./', delete_orig=False, share_root=No
             + "\n  ".join(conflicts[:20])
         )
 
-    # delete original file from all_data or similar folder
-    if delete_orig:
-        for rdf in info.Raw_data_file.unique():
-            # Same path normalisation the pipeline used to find the file.
-            rdf = os.path.join(share_root or default_share_root(), _normalize_share_path(rdf))
-            logger.info(rdf)
-            if os.path.exists(rdf):
-                # os.remove rather than os.system("rm ..."): no shell involved,
-                # so spaces and quotes in the path cannot make this delete
-                # something else.
-                os.remove(rdf)
-
     # move each date from toload to loaded folders. Copy then remove, rather
     # than shutil.move, so an interrupted run leaves the source intact.
     for oldpath, newpath in moves:
@@ -2637,6 +2633,29 @@ def clean_up_folders(infile=None, basedir='./', delete_orig=False, share_root=No
         os.makedirs(os.path.dirname(newpath), exist_ok=True)
         _copy_tree(oldpath, newpath, ignore=ignore_files)
         shutil.rmtree(oldpath, ignore_errors=True)
+
+    # Delete the originals only after every move above has finished, and only
+    # when a copy with the same name is now in loaded/. Any failure above
+    # raises before this point, so the originals stay put. (Contents aren't
+    # compared: the tidy step may have edited the toload copy on purpose.)
+    if delete_orig:
+        loaded_names = set()
+        for _, newpath in moves:
+            for _root, _dirs, files in os.walk(newpath):
+                loaded_names.update(files)
+        for rdf in info.Raw_data_file.unique():
+            # Same path normalisation the pipeline used to find the file.
+            rdf = os.path.join(share_root or default_share_root(), _normalize_share_path(rdf))
+            if not os.path.exists(rdf):
+                continue
+            if os.path.basename(rdf) not in loaded_names:
+                logger.warning(f"Not deleting {rdf}: no copy of it is in loaded/")
+                continue
+            logger.info(f"deleting original {rdf}")
+            # os.remove rather than os.system("rm ..."): no shell involved,
+            # so spaces and quotes in the path cannot make this delete
+            # something else.
+            os.remove(rdf)
 
 
 CONTROL_COLUMNS = {'sciposcontrol': 'Sci_PosControl', 'scinegcontrol': 'Sci_NegControl'}
