@@ -2603,8 +2603,11 @@ def check_dr_plates(info, draw=1):
         if i < n_draw:
             _draw_dr_layout(grid_num, dr)
             if '[compound] uM' in dr and dr['[compound] uM'].notna().any():
+                # No colourbar: the printed concentrations are the key, and the
+                # colour change between dilution steps is enough to spot a slip.
                 draw_plate_heatmap(barcode=grid_num, df=dr, wells='Destination well',
-                                   values='[compound] uM', labels='[compound] uM', plate_size=384)
+                                   values='[compound] uM', labels='[compound] uM', plate_size=384,
+                                   cbar=False)
     if 0 < n_draw < len(dr_plates):
         logger.warning(f"Drew {n_draw} of {len(dr_plates)} DR plates. Use draw='all' to draw every plate.")
     summary = pd.DataFrame(rows)
