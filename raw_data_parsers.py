@@ -714,14 +714,13 @@ def _rpt_spectra(lines, first, last):
 def _choose_rpt_spectrum(spectra, sample):
     """Pick the spectrum to analyze when a sample has more than one.
 
-    Prefer the last MaxEnt (deconvoluted) spectrum; otherwise take the last one, which is
-    what the new-Xevo notebook did by hand.
+    Takes the last spectrum in the sample, the same rule Tethering_Analysis_new_Xevo.ipynb
+    used (it kept the second BPI/BPM/;Mass block of each sample).
     """
     if len(spectra) <= 1:
         return spectra[0] if spectra else None
-    maxent = [s for s in spectra if 'maxent' in s['ProcDesc'].lower()]
-    chosen = (maxent or spectra)[-1]
-    logger.info(f"Sample {sample}: {len(spectra)} spectra found; using the one at line {chosen['start']} "
+    chosen = spectra[-1]
+    logger.info(f"Sample {sample}: {len(spectra)} spectra found; using the last one, at line {chosen['start']} "
                 f"({chosen['ProcDesc'][:40] or 'no ProcDesc'}).")
     return chosen
 
@@ -730,7 +729,7 @@ def extract_rpt_data(infile, samples_only=False, outdir="./"):
     """Extracts data from .rpt file and saves individual sample data to ./samples/ directory.
 
     Reads the report in one pass, so it works on both the older OpenLynx layout (one spectrum
-    per sample) and newer Xevo reports with two spectra per sample (see _choose_rpt_spectrum).
+    per sample) and newer Xevo reports with two spectra per sample, where it takes the last one.
 
     Args:
         infile (str): Path to .rpt file.

@@ -59,7 +59,7 @@ class XevoTests(unittest.TestCase):
         report.write_bytes(b"".join(lines[:start] + extra + lines[start:]))
         return report, len(extra)
 
-    def test_two_spectra_per_sample_uses_maxent(self):
+    def test_two_spectra_per_sample_uses_the_last(self):
         with tempfile.TemporaryDirectory() as d:
             report, _ = self._two_spectrum_report(d, b"Combine (81:93)")
             df = raw_data_parsers.extract_rpt_data(str(report), outdir=d)
@@ -67,7 +67,7 @@ class XevoTests(unittest.TestCase):
             self.assertEqual(df.iloc[0]["intensitymax"], 11036179)
             self.assertEqual(df.iloc[0]["massatmax"], 25247.0)
 
-    def test_two_maxent_spectra_uses_the_last(self):
+    def test_last_spectrum_is_extracted_to_the_sample_file(self):
         with tempfile.TemporaryDirectory() as d:
             report, n_extra = self._two_spectrum_report(d, b"MaxEnt 1 copy")
             df = raw_data_parsers.extract_rpt_data(str(report), outdir=d)
