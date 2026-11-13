@@ -421,8 +421,8 @@ functions are not written to be testable; see the `TODO: decompose further` on
 
 **`ModuleNotFoundError: No module named 'plate_maps'` (or `mysql_cnx`)**
 Run `pip install -e '.[upload]'` from this repo into the environment the kernel
-uses, restart the kernel, and import with `from database_interactions import plate_maps`.
-(Old notebooks that keep the flat `import plate_maps` need `import smdc_paths` first.)
+uses, restart the kernel, and import with `from database_interactions import plate_maps`
+(the flat `import plate_maps` no longer works).
 
 **`ConnectionError: Cannot reach HiTS ...`**
 The SSH tunnel is down, or the `mysql_*` variables are wrong. Reopen the tunnel

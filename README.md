@@ -92,10 +92,8 @@ from database_interactions import plate_maps as pm
 from data_viz import plot_curves as pc
 ```
 
-`smdc_paths` is a legacy shim kept for old notebooks that use flat names such as
-`import plate_maps`. Running `import smdc_paths` first puts the module folders on `sys.path`.
-New code should use the package imports above. No `sys.path.append('/Users/.../data-proc')`
-lines are needed. Code is moving out of data-proc piece by piece; whatever has been migrated
+Flat imports such as `import plate_maps` no longer work; use the package imports above.
+No `sys.path.append('/Users/.../data-proc')` lines are needed. Code is moving out of data-proc piece by piece; whatever has been migrated
 lives here, and the data-proc copy is removed only after that piece is confirmed.
 
 `raw_data_parsers.extract_rpt_data(infile, samples_only=False, outdir="./")`

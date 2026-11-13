@@ -13,8 +13,8 @@ three guard rails on top of ``inventory_registration``:
 
 Typical notebook use (one settings cell, then one run cell)::
 
-    import safe_register as sr
-    import inventory_registration as ir
+    from database_interactions import safe_register as sr
+    from database_interactions import inventory_registration as ir
 
     DATABASE = "QB3_HiTS_nightly"   # change to "QB3_HiTS" only when ready
     SAVE = False                     # False = dry run, True = really save
