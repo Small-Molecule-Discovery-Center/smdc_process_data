@@ -29,6 +29,7 @@ def load_csv_files(load_dir="./toload"):
         dfs: List of dataframes containing the data from each CSV file
         filenames: List of filenames corresponding to each dataframe
     """
+    load_dir = _existing_dir(load_dir)
     filenames=[]
     dfs=[]
     for root, dirs, files in os.walk(load_dir):
@@ -100,6 +101,31 @@ def prepare_data_for_upload(df,ctrls='cols', neg_ctrl_locs=[1,2], pos_ctrl_locs=
 
 
 ####### ENVISION FILE PARSING FUNCTIONS #######
+
+
+def _existing_dir(load_dir):
+    """load_dir as a folder that exists, or a FileNotFoundError naming it.
+
+    os.walk on a missing folder yields nothing, so a wrong path used to look
+    like "0 files, nothing to fix". A Z:\\ or /Volumes/Shared/ path is mapped
+    to where the share is mounted here (plate_maps.resolve_share_path) when
+    plate_maps can be imported, so a path copied on Windows works in WSL.
+    """
+    path = str(load_dir)
+    try:
+        from plate_maps import resolve_share_path
+    except ImportError:
+        try:
+            from database_interactions.plate_maps import resolve_share_path
+        except ImportError:
+            resolve_share_path = None
+    if resolve_share_path is not None:
+        path = resolve_share_path(path)
+    if not os.path.isdir(path):
+        raise FileNotFoundError(f"Folder not found: {load_dir!r}"
+                                + (f" (looked for {path!r})" if path != str(load_dir) else "")
+                                + ". Check the path, and that the share is mounted.")
+    return path
 
 
 def parse_envision_files(plate_type='384', load_dir="./toload"):
@@ -186,6 +212,7 @@ def _envision_load_csv_files(load_dir="./toload", plate_type='384'):
         dfs: List of dataframes containing the data from each CSV file
         filenames: List of filenames corresponding to each dataframe
     """
+    load_dir = _existing_dir(load_dir)
     filenames=[]
     dfs=[]
     for root, dirs, files in os.walk(load_dir):
@@ -200,9 +227,15 @@ def _envision_load_csv_files(load_dir="./toload", plate_type='384'):
                 try:
                     df=pd.read_csv(os.path.join(root, file), header=None)
                 except Exception as e:
-                    logger.error(f"Error reading {file}: {e}. Falling back to envision-specific CSV loading for {file}")
+                    logger.info(f"{file} has rows of different widths ({e}); reading it with the EnVision column layout")
                     ncols=plate_dict[plate_type][2]+2
-                    df=pd.read_csv(os.path.join(root, file),  header=None, names=np.arange(0,ncols), usecols=np.arange(0,ncols), skip_blank_lines=False).dropna(how='all', axis=1)
+                    # Pad or cut every row to ncols first: read_csv rejects a
+                    # names list longer than the widest row (e.g. no trailing comma).
+                    with open(os.path.join(root, file), newline='') as fh:
+                        buf = io.StringIO()
+                        csv.writer(buf).writerows((r + [''] * ncols)[:ncols] for r in csv.reader(fh))
+                    buf.seek(0)
+                    df=pd.read_csv(buf, header=None, names=np.arange(0,ncols), skip_blank_lines=False).dropna(how='all', axis=1)
                     
                 dfs.append(df)
     return dfs, filenames
@@ -436,6 +469,7 @@ def ensure_calc_spacing_in_dir(load_dir: str, required_empty_lines: int = 3) -> 
     Returns:
         (files_seen, files_changed, total_inserted)
     """
+    load_dir = _existing_dir(load_dir)
     files_seen = 0
     files_changed = 0
     total_inserted = 0
@@ -453,8 +487,13 @@ def ensure_calc_spacing_in_dir(load_dir: str, required_empty_lines: int = 3) -> 
                 files_changed += 1
                 total_inserted += inserted
 
-    logger.info(
-        f"Processed {files_seen} CSV file(s) in '{load_dir}': changed {files_changed}, inserted {total_inserted} blank line(s)")
+    if files_seen == 0:
+        logger.warning(f"No CSV files found under '{load_dir}'. Is this the right folder?")
+    elif files_changed == 0:
+        logger.info(f"Found {files_seen} CSV file(s) in '{load_dir}': spacing already OK, nothing changed")
+    else:
+        logger.info(f"Found {files_seen} CSV file(s) in '{load_dir}': fixed spacing in {files_changed}, "
+                    f"inserted {total_inserted} blank line(s)")
     return files_seen, files_changed, total_inserted
 
 
@@ -646,6 +685,8 @@ def fill_zprime_blocks_in_dir(load_dir: str, require_prefix: bool = True) -> Tup
     Returns:
         (files_changed, blocks_filled_total)
     """
+    load_dir = _existing_dir(load_dir)
+    files_seen = 0
     files_changed = 0
     blocks_total = 0
     for root, dirs, files in os.walk(load_dir):
@@ -655,11 +696,18 @@ def fill_zprime_blocks_in_dir(load_dir: str, require_prefix: bool = True) -> Tup
             if file.startswith('._'):
                 continue
             csv_path = os.path.join(root, file)
+            files_seen += 1
             changed, blocks = fill_zprime_blocks_in_file(csv_path, require_prefix=require_prefix)
             if changed:
                 files_changed += 1
                 blocks_total += blocks
-    logger.info(f"Filled Z' blocks in {files_changed} file(s), total blocks: {blocks_total}")
+    if files_seen == 0:
+        logger.warning(f"No CSV files found under '{load_dir}'. Is this the right folder?")
+    elif files_changed == 0:
+        logger.info(f"Found {files_seen} CSV file(s) in '{load_dir}': no empty Z' blocks, nothing changed")
+    else:
+        logger.info(f"Found {files_seen} CSV file(s) in '{load_dir}': filled {blocks_total} empty Z' "
+                    f"block(s) in {files_changed} file(s)")
     return files_changed, blocks_total
 
 
@@ -797,3 +845,441 @@ def extract_rpt_data(infile, samples_only=False, outdir="./"):
         print(f"\n\nExtracted and saved {len(df)} samples to the Samples folder;\nzipped folder is at {archive_path}.\n\n")
         return df[['Sample', 'Plate', 'Well', 'Fname', 'intensitymax', 'massatmax',]]
     return df
+
+
+
+def trim_csv_columns_in_file(csv_path: str, ncols: int = 25) -> Tuple[bool, int]:
+    """Cut every row of a CSV to its first ncols fields, in place.
+
+    For EnVision exports where someone typed in columns past the plate
+    (row label + 24 columns = 25). Blank lines and quoting are kept, and the
+    file is only rewritten when a row was longer than ncols.
+
+    Returns:
+        (changed, rows_trimmed)
+    """
+    with open(csv_path, newline='') as f:
+        text = f.read()
+    newline = '\r\n' if '\r\n' in text else '\n'
+    rows = list(csv.reader(text.splitlines()))
+    # Only rows with values past ncols; a trailing empty field (r ends in ',') is left alone.
+    over = [any(str(v).strip() for v in r[ncols:]) for r in rows]
+    trimmed = sum(over)
+    if not trimmed:
+        return (False, 0)
+    with open(csv_path, 'w', newline='') as f:
+        writer = csv.writer(f, lineterminator=newline)
+        for r, cut in zip(rows, over):
+            writer.writerow(r[:ncols] if cut else r)
+    logger.info(f"Trimmed {trimmed} row(s) of {csv_path} to {ncols} columns")
+    return (True, trimmed)
+
+
+_UNPARSEABLE = "the file can't be parsed as an EnVision export"
+
+
+def _wells_per_read(csv_path, plate_type='384'):
+    """Filled-well count of each read (measurement block) in one EnVision CSV.
+
+    Returns None when the file can't be parsed at all. Callers must report
+    that as a problem: an empty list would read as "nothing wrong".
+    """
+    import tempfile, shutil
+    with tempfile.TemporaryDirectory() as tmp:
+        shutil.copy(csv_path, os.path.join(tmp, os.path.basename(csv_path)))
+        try:
+            parsed = parse_envision_files(plate_type=plate_type, load_dir=tmp)
+        except Exception as e:  # unreadable file: say so rather than stop the tidy
+            logger.warning(f"Could not parse {csv_path} to count wells per read: {e}")
+            return None
+    meas = [c for c in parsed.columns if c not in ('plate', 'row', 'col', 'well', 'Well')]
+    return [int(parsed[c].notna().sum()) for c in meas]
+
+
+def file_in_use_message(path):
+    """Message for a PermissionError on writing path: usually the file is
+    open in another program (Excel, a text editor) that locks it."""
+    return (f"Can't write {path}: it is open in another program (Excel, a text editor, Pipeline Pilot) or you "
+            "don't have write permission there. Close it everywhere else and run this cell again.")
+
+
+def _envision_section_kind(row):
+    """'plate', 'background' or 'results' if this CSV row starts that kind of
+    EnVision section, else None."""
+    first = str(row[0]).strip() if row else ''
+    if first.startswith('Plate information'):
+        return 'plate'
+    if first.startswith('Background information'):
+        return 'background'
+    if first.startswith(('Calculated results', 'Results')):
+        return 'results'
+    return None
+
+
+def arrange_envision_blocks_in_file(csv_path: str) -> Tuple[bool, int]:
+    """Lay out every block of an EnVision CSV the way the upload expects, in place.
+
+    Each block becomes, counting its 'Plate information' line as line 1:
+
+        1  Plate information          5  Background information
+        2  header row                 6  header row
+        3  plate row                  7-8  background rows (a blank line
+        4  blank                           stands in for a missing 2nd row)
+                                      9  blank
+                                      10 results title, 11 column numbers,
+                                      12 row A ... last row, then one blank line
+
+    Blank lines are added wherever needed so row A is always on line 12.
+    If a section is too long for that (e.g. three background rows), the
+    block is written with one blank line between sections and a warning.
+
+    A block is one Plate information, one Background information and one
+    results section, in any order in the file: an export with the results
+    placed first is re-ordered. Section contents are not changed, only their
+    order and the blank lines between them. Everything from 'Basic assay
+    information' on is kept as it is.
+
+    The file is left alone, with a warning, when the sections can't be paired
+    up safely (for example two results sections with no Plate information
+    between them). check_envision_csv still reports anything left over, such
+    as a third background row or values pasted into the grid.
+
+    Returns:
+        (changed, blocks_rearranged)
+    """
+    with open(csv_path, newline='') as f:
+        text = f.read()
+    newline = '\r\n' if '\r\n' in text else '\n'
+    rows = list(csv.reader(text.splitlines()))
+
+    def blank(r):
+        return not any(str(v).strip() for v in r)
+
+    stop = next((i for i, r in enumerate(rows) if r and str(r[0]).strip().startswith('Basic assay information')),
+                len(rows))
+    starts = [i for i in range(stop) if _envision_section_kind(rows[i])]
+    if not starts:
+        return (False, 0)
+    blank_row = next((r for r in rows[:stop] if r and blank(r) and len(r) > 1), [])
+
+    def strip_trailing_blanks(block):
+        while block and blank(block[-1]):
+            block = block[:-1]
+        return block
+
+    sections = [(_envision_section_kind(rows[a]), a, strip_trailing_blanks(rows[a:b]))
+                for a, b in zip(starts, starts[1:] + [stop])]
+    groups, cur = [], {}
+    for kind, at, lines in sections:
+        if kind in cur:
+            logger.warning(f"{csv_path}: line {at + 1} starts a second {kind} section before the block above has "
+                           "Plate information, Background information and results. Not re-arranging this file; "
+                           "re-export it from EnVision.")
+            return (False, 0)
+        cur[kind] = (at, lines)
+        if len(cur) == 3:
+            groups.append(cur)
+            cur = {}
+    if cur:
+        logger.warning(f"{csv_path}: the last block has only {', '.join(sorted(cur))}. Not re-arranging this "
+                       "file; re-export it from EnVision.")
+        return (False, 0)
+
+    out = [r for r in rows[:starts[0]]]
+    rearranged = 0
+
+    def pad_to(block, n):
+        # at least one blank line, more until the block is n lines long
+        return block + [blank_row] * max(1, n - len(block))
+
+    for g in groups:
+        results = list(g['results'][1])
+        before_a = next((i for i, r in enumerate(results) if r and str(r[0]).strip() == 'A'), 2)
+        block = pad_to(list(g['plate'][1]), 4)                  # Background information on line 5
+        block = pad_to(block + list(g['background'][1]), 11 - before_a)   # row A on line 12
+        if len(block) + before_a != 11:
+            logger.warning(f"{csv_path}: the block whose Plate information is on line "
+                           f"{g['plate'][0] + 1} has too many rows to put row A on line 12 by adding blank "
+                           "lines. Re-export it from EnVision or fix it by hand.")
+        block += results + [blank_row]
+        first_at = min(at for at, _ in g.values())
+        if [list(r) for r in rows[first_at:first_at + len(block)]] != [list(r) for r in block]:
+            rearranged += 1
+        out += block
+    trailing = 0
+    for r in reversed(rows[:stop]):
+        if not blank(r):
+            break
+        trailing += 1
+    out += [blank_row] * max(0, trailing - 1) + rows[stop:]
+    if out == rows:
+        return (False, 0)
+    with open(csv_path, 'w', newline='') as f:
+        csv.writer(f, lineterminator=newline).writerows(out)
+    logger.info(f"Re-arranged {rearranged} block(s) of {csv_path} so row A of each results grid is on line 12")
+    return (True, rearranged)
+
+
+def _envision_ncols(csv_path, default=25):
+    """Row label + plate columns (13, 25 or 49), from the first plate grid's
+    column-number header; default if no grid header is found."""
+    with open(csv_path, newline='') as f:
+        for r in csv.reader(f):
+            if r and not str(r[0]).strip() and len(r) > 1 and str(r[1]).strip().lstrip('0') == '1':
+                n = sum(1 for v in r[1:] if str(v).strip())
+                if n in (12, 24, 48):
+                    return n + 1
+    return default
+
+
+def tidy_envision_files(paths, ncols: int = None) -> pd.DataFrame:
+    """Tidy the given EnVision CSVs in place and check what can't be tidied.
+
+    Required before uploading EnVision files. Fixes: trims extra columns a
+    user added after the plate (ncols = row label + plate columns, read from
+    each file's grid header when None: 13, 25 or 49); re-arranges each
+    block to Plate information, Background information, then results, with
+    the blank lines that put row A on line 12 (arrange_envision_blocks_in_file);
+    and fills empty Z' blocks. Then checks what it can't fix and must be
+    cleaned by hand: values pasted outside the grid, grid rows Pipeline Pilot
+    would drop, and reads covering different numbers of wells. See
+    check_envision_csv.
+
+    Meant for the raw files make_dr_platemaps_and_folders copied into the
+    toload folders (plate_maps.raw_files(info)), so only the files that will
+    be uploaded are touched and the originals on the share are left alone.
+    Non-CSV paths (e.g. .rpt) are skipped.
+
+    Returns:
+        DataFrame with one row per CSV: rows trimmed, blocks re-arranged and
+        Z' blocks filled (0 = nothing to fix), wells per read, and problems
+        (empty = ready to upload).
+    """
+    paths = [str(p) for p in ([paths] if isinstance(paths, (str, os.PathLike)) else paths)]
+    missing = [p for p in paths if not os.path.isfile(p)]
+    if missing:
+        raise FileNotFoundError(f"File(s) not found: {missing}")
+    csvs = [p for p in paths if p.lower().endswith('.csv') and not os.path.basename(p).startswith('._')]
+    skipped = len(paths) - len(csvs)
+    rows = []
+    for p in csvs:
+        width = ncols or _envision_ncols(p)
+        plate_type = {13: '96', 25: '384', 49: '1536'}.get(width)
+        try:
+            _, trimmed = trim_csv_columns_in_file(p, width)
+            _, arranged = arrange_envision_blocks_in_file(p)
+            _, zblocks = fill_zprime_blocks_in_file(p)
+        except PermissionError as e:
+            raise PermissionError(file_in_use_message(p)) from e
+        counts = _wells_per_read(p, plate_type or '384')
+        problems = check_envision_csv(p, plate_type)
+        if counts is None and _UNPARSEABLE not in problems:
+            problems.insert(0, _UNPARSEABLE)
+        rows.append({'file': p, 'rows trimmed': trimmed, 'blocks re-arranged': arranged,
+                     "Z' blocks filled": zblocks,
+                     'wells per read': '/'.join(map(str, counts or [])),
+                     'reads differ': counts is not None and len(set(counts)) > 1,
+                     'problems': '; '.join(problems)})
+    cols = ['file', 'rows trimmed', 'blocks re-arranged', "Z' blocks filled", 'wells per read',
+            'reads differ', 'problems']
+    out = pd.DataFrame(rows, columns=cols)
+    fixed = ['rows trimmed', 'blocks re-arranged', "Z' blocks filled"]
+    changed = int((out[fixed].sum(axis=1) > 0).sum()) if len(out) else 0
+    for _, r in out[out['problems'] != ''].iterrows():
+        logger.warning(f"{r['file']} doesn't look like an untouched EnVision export, and tidying can't fix it: "
+                       f"{r['problems']}. Fix it by hand (leave missing wells blank, not 0).")
+    note = f" (skipped {skipped} non-CSV file(s))" if skipped else ""
+    if not csvs:
+        logger.warning(f"No CSV files to tidy{note}.")
+    elif changed:
+        logger.info(f"Found {len(csvs)} CSV file(s){note}: tidied {changed}, {len(csvs) - changed} already tidy")
+    else:
+        logger.info(f"Found {len(csvs)} CSV file(s){note}: all already tidy, nothing changed")
+    return out
+
+
+_GRID_ROW = re.compile(r'^[A-Z]{1,2}$')
+
+
+_PP_GRID_LINE = re.compile(r'^(\w[,\t])?[\d\.\-\t,]*$')
+
+
+def _grid_row_labels(nrows):
+    """Row letters for a plate grid: A..P for 384, A..Z then AA..AF for 1536."""
+    labels = []
+    for number in range(1, nrows + 1):
+        label = ''
+        while number:
+            number, rem = divmod(number - 1, 26)
+            label = chr(65 + rem) + label
+        labels.append(label)
+    return labels
+
+
+def _block_layout_problems(lines, nrows=16):
+    """Check each data block's layout, counting its 'Plate information' line as 1:
+
+        1  Plate information          7-8  background rows
+        2  header row                 9    blank
+        3  plate row                  10   Calculated results... / Results for...
+        4  blank                      11   column numbers
+        5  Background information     12   row A
+        6  header row                 ...  then a blank line after the last row
+
+    i.e. Plate information and Background information are exported before
+    the results, with one blank line between blocks. Returns a list of problems.
+    """
+    def blank(i):
+        return i >= len(lines) or not any(str(v).strip() for v in lines[i])
+
+    def first(i):
+        return str(lines[i][0]).strip() if i < len(lines) and lines[i] else ''
+
+    problems = []
+    starts = [i for i in range(len(lines)) if first(i).startswith('Plate information')]
+    stop = next((i for i in range(len(lines)) if first(i).startswith('Basic assay information')), len(lines))
+    results = [i for i in range(stop) if first(i).startswith(('Calculated results', 'Results for'))]
+    if results and (not starts or results[0] < starts[0]):
+        problems.append(f"line {results[0] + 1}: a results block comes before any Plate information. Export with "
+                        "Plate information and Background information placed before the results, or run the tidy step, "
+                        "which re-arranges the blocks.")
+    for b in starts:
+        n = b + 1  # 1-based line number of this block's Plate information
+        expect = [(1, lambda i: first(i).startswith('Plate'), "the Plate information header row"),
+                  (3, blank, "a blank line"),
+                  (4, lambda i: first(i).startswith('Background information'), "'Background information'"),
+                  (8, blank, "a blank line"),
+                  (9, lambda i: first(i).startswith(('Calculated results', 'Results')), "the results title"),
+                  (11, lambda i: first(i) == 'A', "row A")]
+        bad = [(off, what) for off, test, what in expect if not test(b + off)]
+        if bad:
+            off, what = bad[0]
+            a_row = next((i for i in range(b + 1, min(stop, b + 40)) if first(i) == 'A'), None)
+            where = f"row A is on line {a_row - b + 1} of the block" if a_row is not None else "no row A found"
+            single_bg = (first(b + 4).startswith('Background information') and not blank(b + 6)
+                         and blank(b + 7) and first(b + 8).startswith(('Calculated results', 'Results')))
+            hint = (" The Background information has one row: the tidy step adds the missing blank line."
+                    if single_bg else " Plate information and Background information must come first, "
+                    "each followed by one blank line. The tidy step re-arranges this.")
+            problems.append(f"line {n} (block starting here): expected {what} on line {off + 1} of the block, "
+                            f"so row A lands on line 12 ({where}).{hint}")
+            continue
+        # The column-number row must be exactly 1..ncols for this plate size
+        # (96: 12, 384: 24, 1536: 48), with nothing else on it.
+        ncols = {v[1]: v[2] for v in plate_dict.values()}.get(nrows)
+        if ncols:
+            header = [str(v).strip() for v in lines[b + 10]] if b + 10 < len(lines) else []
+            nums = [v.lstrip('0') or '0' for v in header[1:] if v]
+            if nums != [str(c) for c in range(1, ncols + 1)]:
+                got = f"{nums[0]} to {nums[-1]} ({len(nums)} columns)" if nums else "no column numbers"
+                problems.append(f"line {b + 11}: the column numbers of the grid that starts on line {b + 12} "
+                                f"should be 1 to {ncols} for a {nrows * ncols}-well plate; found {got}.")
+                continue
+        # Every grid row keeps its letter even when its wells are blank, so a
+        # blank row P still reads 'P'. Check the letters in order for each block
+        # to tell a shifted block from a plate with an empty last row.
+        wrong = next(((i, lab) for i, lab in enumerate(_grid_row_labels(nrows))
+                      if first(b + 11 + i) != lab), None)
+        if wrong is not None:
+            i, lab = wrong
+            got = first(b + 11 + i)
+            problems.append(f"line {b + 12 + i}: expected row {lab} of the grid that starts on line {b + 12}, "
+                            f"found {got!r}" + (" (blank line)." if blank(b + 11 + i) else "."))
+            continue
+        # Pipeline Pilot's EnVision Reader keeps only grid lines matching this
+        # pattern and letters rows by their order, not by the label in the file.
+        # A row with text (e.g. 1.2E+05, NaN, #DIV/0!) is dropped and every row
+        # below it moves up one letter. Its 16-row limit means 1536 is skipped.
+        if nrows <= 16:
+            for i in range(nrows):
+                cells = lines[b + 11 + i]
+                if not any(str(v).strip() for v in cells[1:]):
+                    continue  # an empty row (label only) is kept by PP as empty wells
+                line = ','.join(str(v) for v in cells)
+                if not _PP_GRID_LINE.match(line):
+                    problems.append(f"line {b + 12 + i}: row {first(b + 11 + i)} has a value that is not a plain "
+                                    "number (for example text, NaN or 1.2E+05). Pipeline Pilot drops this row and "
+                                    "shifts the rows below it up one letter.")
+                    break
+        last = b + 11 + nrows - 1
+        if not blank(last + 1):
+            problems.append(f"line {last + 2}: expected a blank line after the results grid that starts on line "
+                            f"{b + 12}.")
+    return problems
+
+
+def check_envision_csv(csv_path: str, plate_type: str = None, max_problems: int = 10) -> list:
+    """Check that an EnVision CSV still looks like an instrument export.
+
+    Catches the hand edits that make Pipeline Pilot's EnVision reader fail:
+    values pasted outside the plate grid or over the Plate information /
+    Background information lines, extra rows or columns in a plate grid, and
+    reads (measurement blocks) that cover different numbers of wells, which is
+    what makes Merge Plates fail with "Well property size mismatch". Only the
+    part before "Basic assay information" is checked; the protocol details
+    after it have no fixed layout. The plate format (96/384/1536) is read from
+    the first plate grid's column numbers unless plate_type is given.
+
+    Returns:
+        list[str]: problems, each naming the line. Empty = looks compliant.
+    """
+    with open(csv_path, newline='') as f:
+        lines = list(csv.reader(f))
+    problems = []
+    if plate_type is None:
+        widths = [sum(1 for v in r[1:] if str(v).strip()) for r in lines
+                  if r and not r[0].strip() and len(r) > 1 and str(r[1]).strip().lstrip('0') == '1']
+        by_cols = {v[2]: k for k, v in plate_dict.items()}
+        plate_type = next((by_cols[w] for w in widths if w in by_cols), '384')
+    ncols, nrows = plate_dict[str(plate_type)][2], plate_dict[str(plate_type)][1]
+
+    def filled(row, start=0):
+        return [i for i, v in enumerate(row) if i >= start and str(v).strip()]
+
+    section, width, grid_rows = None, 0, 0
+    for n, row in enumerate(lines, start=1):
+        first = row[0].strip() if row else ''
+        if first.startswith('Basic assay information'):
+            break
+        cells = filled(row)
+        if not cells:                                   # blank line ends a section
+            section = None
+            continue
+        if first.startswith(('Plate information', 'Background information')):
+            section, width = 'info_title', 0
+            extra = filled(row, 1)
+        elif first.startswith(('Calculated results', 'Results for')) or (first and section is None
+                                                                           and not _GRID_ROW.match(first)):
+            section = 'title'
+            extra = filled(row, 1)
+        elif section == 'info_title':                   # header row: its named columns are the limit
+            width = next((i for i, v in enumerate(row) if not str(v).strip()), len(row))
+            section = 'info'
+            extra = filled(row, width)
+        elif section == 'info':
+            extra = filled(row, width)
+        elif first == '' and [str(row[i]).strip().lstrip('0') for i in cells] == [str(k) for k in range(1, len(cells) + 1)]:
+            section, grid_rows = 'grid', 0              # column-number header of a plate grid
+            extra = filled(row, ncols + 1)
+        elif section == 'grid' and _GRID_ROW.match(first):
+            grid_rows += 1
+            extra = filled(row, ncols + 1)
+            if grid_rows > nrows:
+                problems.append(f"line {n}: plate grid has more than {nrows} rows")
+        else:
+            extra = cells                               # values where no data belongs
+        if extra:
+            cols = ', '.join(str(i + 1) for i in extra[:6]) + (' ...' if len(extra) > 6 else '')
+            problems.append(f"line {n} ({first[:30] or 'blank first cell'}): unexpected values in column(s) {cols}")
+        if len(problems) >= max_problems:
+            problems.append('... more problems not listed')
+            return problems
+
+    problems += _block_layout_problems(lines, nrows)
+    counts = _wells_per_read(csv_path, plate_type)
+    if counts is None:
+        problems.append(_UNPARSEABLE)
+    elif len(set(counts)) > 1:
+        problems.append(f"reads have data in different numbers of wells ({'/'.join(map(str, counts))}); "
+                        "Pipeline Pilot's Merge Plates fails on this ('Well property size mismatch')")
+    return problems
