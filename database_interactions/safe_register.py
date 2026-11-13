@@ -70,11 +70,9 @@ def wells_for_daughter_plates(mother_wells: pd.DataFrame, **copy_kwargs: Any) ->
 
     def build(inserted: pd.DataFrame) -> pd.DataFrame:
         new_ip_id_map = dict(zip(inserted["IP_SOURCE_ID"], inserted["IP_ID"]))
-        barcodes = dict(zip(inserted["IP_ID"], inserted["IP_BARCODE"]))
         return ir.copy_daughter_wells(
             mother_wells,
             new_ip_id_map=new_ip_id_map,
-            daughter_plate_barcodes=barcodes,
             **copy_kwargs,
         )
 

@@ -731,14 +731,14 @@ def fill_missing_wells(
     plate_col: str,
     well_col: str,
     size: int,
-    carry_columns: Sequence[str] = ("IW_IP_ID", "IW_BARCODE", "IW_INS_BY", "IW_INS_DATE", "IW_CONTAM"),
+    carry_columns: Sequence[str] = ("IW_IP_ID", "IW_INS_BY", "IW_INS_DATE", "IW_CONTAM"),
 ) -> pd.DataFrame:
     """Pad each plate to full geometry by adding missing coordinate rows.
 
     Note:
-        ``IW_BARCODE`` is carried because daughter barcodes are a per-plate value when
-        no explicit per-well barcode source was provided. Compound/lot fields such as
-        ``IW_ICL_ID`` remain excluded so empty wells do not inherit compound identity.
+        ``IW_BARCODE`` is not carried: it holds a scanned matrix-tube barcode, which
+        an empty padded well doesn't have. Compound/lot fields such as ``IW_ICL_ID``
+        are excluded too, so empty wells do not inherit compound identity.
 
     Parameters:
         wells: Well dataframe containing at least plate and well columns.
@@ -1036,9 +1036,10 @@ def prepare_inventory_frames(
     ``IW_FINAL_CONC_NM``; ``True`` always enforces it; ``False`` never does.
 
     Exact/name-matched ``IP_*``/``IW_*`` source columns are carried automatically;
-    explicit inputs override those values. ``IW_BARCODE`` is the sole special well
-    field: an explicit value/source column wins, otherwise it is filled from the
-    resolved plate barcode per plate after padding.
+    explicit inputs override those values. ``IW_BARCODE`` is the scanned
+    matrix-tube barcode: it comes only from an ``IW_BARCODE`` source column (or an
+    explicit ``well_inputs`` entry), is optional, and is never filled from
+    ``IP_BARCODE``. Padded empty wells get no barcode.
     """
     _assert_unique_columns(source)
     grid_src = _resolve_source_column(plate_inputs, "IP_GRID_NUM", source)
@@ -1065,13 +1066,13 @@ def prepare_inventory_frames(
     well_schema = list(well_schema_columns or [c for c in source.columns if str(c).startswith("IW_")])
     if "IW_COORDINATES" not in well_schema:
         well_schema.append("IW_COORDINATES")
-    # IW_BARCODE is handled specially below; all other fields are resolved identically.
+    # IW_BARCODE (scanned tube barcode, optional) is resolved like any other field.
     wells = _apply_schema_source_columns(
         well_base,
         source,
         well_schema,
         explicit_inputs=well_inputs,
-        ignore_columns={"IW_COORDINATES", "IW_WELL_INDEX", "IW_BARCODE"},
+        ignore_columns={"IW_COORDINATES", "IW_WELL_INDEX"},
     )
     wells["IW_COORDINATES"] = source[well_src].astype(str).to_numpy()
     # Validate before fill_missing_wells so only real source rows are checked (and after
@@ -1105,16 +1106,8 @@ def prepare_inventory_frames(
     if fill_missing:
         wells = fill_missing_wells(wells, plate_col=grid_src, well_col="IW_COORDINATES", size=size)
 
-    barcode_input = well_inputs.get("IW_BARCODE")
-    if barcode_input is None:
-        barcode_by_plate = dict(zip(plates["IP_GRID_NUM"], plates["IP_BARCODE"]))
-        wells["IW_BARCODE"] = wells[grid_src].map(barcode_by_plate)
-    else:
-        resolved = _resolve_value_from_source(source, barcode_input, label="IW_BARCODE")
-        if isinstance(resolved, pd.Series):
-            wells["IW_BARCODE"] = resolved.reset_index(drop=True).to_numpy()
-        else:
-            wells["IW_BARCODE"] = resolved
+    if "IW_BARCODE" not in wells.columns:
+        wells["IW_BARCODE"] = None  # no scanned tube barcodes in this input
 
     return plates, wells
 
@@ -1309,7 +1302,6 @@ def stage_remapped_wells(
     *,
     destination_plate_ids: pd.DataFrame,
     parent_to_daughter: Mapping[Any, Any],
-    daughter_plate_barcodes: Mapping[Any, Any] | pd.Series | pd.DataFrame,
     dest_plate_col: str = "_DEST_PLATE_",
     well_inputs: Mapping[str, Any] | None = None,
     well_overrides: Mapping[str, Any] | None = None,
@@ -1319,8 +1311,9 @@ def stage_remapped_wells(
     """Finalize an interleave/quadrant/custom remap through the shared daughter-well core.
 
     The remap itself only changes coordinates/destination grouping. This helper then
-    stages the real daughter ``IW_IP_ID`` and daughter barcode while preserving every
-    other source ``IW_*`` field, especially ``IW_ICL_ID``.
+    stages the real daughter ``IW_IP_ID`` while preserving every other source
+    ``IW_*`` field, especially ``IW_ICL_ID``. ``IW_BARCODE`` is left empty (see
+    stage_daughter_wells).
     """
     validate_required_columns(remapped_wells, ["IW_ID", "IW_IP_ID", dest_plate_col], "remapped wells")
     validate_required_columns(destination_plate_ids, ["IP_GRID_NUM", "IP_ID", "IP_BARCODE"], "destination plate dataframe")
@@ -1334,7 +1327,6 @@ def stage_remapped_wells(
     result = stage_daughter_wells(
         remapped_wells,
         new_ip_id_map=parent_to_daughter,
-        daughter_plate_barcodes=daughter_plate_barcodes,
         well_inputs=well_inputs,
         well_overrides=translated_overrides,
         ins_by=ins_by,
@@ -1686,7 +1678,6 @@ def stage_daughter_wells(
     source_wells: pd.DataFrame,
     *,
     new_ip_id_map: Mapping[Any, Any],
-    daughter_plate_barcodes: Mapping[Any, Any] | pd.Series | pd.DataFrame,
     well_inputs: Mapping[str, Any] | None = None,
     well_overrides: Mapping[str, Any] | None = None,
     ins_by: int | None = None,
@@ -1698,9 +1689,11 @@ def stage_daughter_wells(
     """Shared daughter-well core used by copy/interleave/quadrant/custom paths.
 
     All source ``IW_*`` columns are preserved by default. Explicit ``well_inputs`` and
-    ``well_overrides`` win. ``IW_IP_ID`` is the staged daughter ID. ``IW_BARCODE`` has
-    one special rule: an explicit source/literal input wins; otherwise it is assigned
-    from the new daughter plate barcode. ``IW_ICL_ID`` is never synthesized or replaced.
+    ``well_overrides`` win. ``IW_IP_ID`` is the staged daughter ID. ``IW_BARCODE`` is
+    the scanned matrix-tube barcode, so it is not copied from the parent: a daughter
+    well plate has no tube barcodes. It is empty unless ``well_inputs`` /
+    ``well_overrides`` supply one. It is never filled from ``IP_BARCODE``.
+    ``IW_ICL_ID`` is never synthesized or replaced.
     """
     validate_required_columns(source_wells, [id_col, ip_id_col], "source wells")
     wells = source_wells.copy()
@@ -1757,11 +1750,7 @@ def stage_daughter_wells(
         else:
             wells["IW_BARCODE"] = barcode_input
     else:
-        barcode_map = to_mapping(daughter_plate_barcodes)
-        wells["IW_BARCODE"] = wells[ip_id_col].map(barcode_map)
-        if wells["IW_BARCODE"].isna().any():
-            missing = wells.loc[wells["IW_BARCODE"].isna(), ip_id_col].drop_duplicates().tolist()
-            raise ValueError(f"Missing daughter plate barcodes for IP_IDs: {missing}")
+        wells["IW_BARCODE"] = None  # tube barcodes don't transfer to a daughter well plate
 
     # Insert metadata is refreshed for every daughter registration unless explicitly
     # supplied through well_inputs/well_overrides.
@@ -1796,7 +1785,6 @@ def copy_daughter_wells(
     source_wells: pd.DataFrame,
     *,
     new_ip_id_map: Mapping[Any, Any],
-    daughter_plate_barcodes: Mapping[Any, Any] | pd.Series | pd.DataFrame,
     well_inputs: Mapping[str, Any] | None = None,
     well_overrides: Mapping[str, Any] | None = None,
     vol_ul: Any | None = None,
@@ -1810,8 +1798,8 @@ def copy_daughter_wells(
 ) -> pd.DataFrame:
     """Build exact-copy daughter wells through the shared staged-well core.
 
-    ``IW_ICL_ID`` is carried from the parent well unchanged. ``IW_BARCODE`` is the only
-    field with daughter-specific fallback behavior.
+    ``IW_ICL_ID`` is carried from the parent well unchanged. ``IW_BARCODE`` is left
+    empty unless supplied (see stage_daughter_wells).
     """
     combined = dict(well_inputs or {})
     if vol_ul is not None:
@@ -1823,7 +1811,6 @@ def copy_daughter_wells(
     return stage_daughter_wells(
         source_wells,
         new_ip_id_map=new_ip_id_map,
-        daughter_plate_barcodes=daughter_plate_barcodes,
         well_inputs=combined,
         well_overrides=well_overrides,
         ins_by=ins_by,

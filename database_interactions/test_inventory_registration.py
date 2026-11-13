@@ -327,32 +327,40 @@ def test_prepare_inventory_frames_barcode_suffix_key():
     }
 
 
-def test_prepare_inventory_frames_iw_barcode_defaults_to_plate_barcode():
-    src = pd.DataFrame(
-        {
-            "Plate": ["P1", "P1", "P2"],
-            "Well": ["A01", "A02", "A01"],
-        }
-    )
-    _, wells = ir.prepare_inventory_frames(
+def _prepare(src, **well_inputs):
+    return ir.prepare_inventory_frames(
         src,
-        plate_inputs={
-            "IP_GRID_NUM": "Plate",
-            "IP_BARCODE_SUFFIX": "-x",
-            "IP_ICO_ID": 1,
-            "IP_COLLECTION": "c",
-        },
-        well_inputs={"IW_COORDINATES": "Well", "IW_BARCODE": None},  # None -> use IP_BARCODE
+        plate_inputs={"IP_GRID_NUM": "Plate", "IP_BARCODE_SUFFIX": "-x", "IP_ICO_ID": 1, "IP_COLLECTION": "c"},
+        well_inputs={"IW_COORDINATES": "Well", **well_inputs},
         size=96,
         require_plate_ids=False,
         fill_missing=True,
     )
-    # every well (incl. padded) carries its plate's IP_BARCODE
-    real = wells[wells["IW_COORDINATES"].isin(["A01", "A02"])]
-    assert dict(zip(real["Plate"], real["IW_BARCODE"])).get("P1") == "P1-x"
-    assert set(wells.loc[wells["Plate"] == "P2", "IW_BARCODE"]) == {"P2-x"}
-    # padded wells for P1 also get the plate barcode
-    assert (wells.loc[wells["Plate"] == "P1", "IW_BARCODE"] == "P1-x").all()
+
+
+def test_prepare_inventory_frames_never_copies_ip_barcode_to_wells():
+    # IW_BARCODE is a scanned tube barcode; with none scanned, every well is empty.
+    src = pd.DataFrame({"Plate": ["P1", "P1", "P2"], "Well": ["A01", "A02", "A01"]})
+    plates, wells = _prepare(src, IW_BARCODE=None)
+    assert set(plates["IP_BARCODE"]) == {"P1-x", "P2-x"}
+    assert wells["IW_BARCODE"].isna().all()
+    plates, wells = _prepare(src)
+    assert wells["IW_BARCODE"].isna().all()
+
+
+def test_prepare_inventory_frames_uses_scanned_iw_barcode_column():
+    src = pd.DataFrame({"Plate": ["P1", "P1"], "Well": ["A01", "A02"], "IW_BARCODE": ["T001", "T002"]})
+    _, wells = _prepare(src)
+    real = wells.set_index("IW_COORDINATES").loc[["A01", "A02"], "IW_BARCODE"]
+    assert real.tolist() == ["T001", "T002"]
+    padded = wells[~wells["IW_COORDINATES"].isin(["A01", "A02"])]
+    assert len(padded) == 94 and padded["IW_BARCODE"].isna().all()
+
+
+def test_copy_daughter_wells_does_not_carry_tube_barcodes():
+    source = pd.DataFrame({"IW_ID": [1], "IW_IP_ID": [1001], "IW_ICL_ID": [111], "IW_BARCODE": ["T001"]})
+    out = ir.copy_daughter_wells(source, new_ip_id_map={1001: 5001})
+    assert out["IW_BARCODE"].isna().all()
 
 
 def _collection_engine():
