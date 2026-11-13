@@ -58,6 +58,15 @@ Data visualizations on SMDC activities over time
 #### data
 example data files for PAMPA and Bruker SPR
 
+### Salt and solvate extraction
+
+Use `database_interactions/extract_salts_solvates.py`
+before compound registration. It reads the salt/solvate reference tables
+(`INV_LOT_SALT`, `INV_LOT_SOLVATE`) from the database when you pass a SQLAlchemy
+`engine=` (SELECT only, in a read-only transaction), or from CSV exports of those
+tables, which also act as a fallback if the database read fails. Run the tests with
+`pytest tests/test_extract_salts_solvates.py` from the repo root (needs rdkit).
+
 ### Install shared utilities
 
 From this checkout, run `uv sync`, which builds `.venv` with this repo, everything the plate

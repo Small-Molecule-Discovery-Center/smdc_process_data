@@ -713,9 +713,73 @@ def fill_zprime_blocks_in_dir(load_dir: str, require_prefix: bool = True) -> Tup
 
 import shutil
 
+_RPT_SAMPLE = re.compile(rb'^Sample\t[0-9]')
+_RPT_DATA_LINE = re.compile(rb'^\s*-?\d+(?:\.\d*)?(?:[eE][-+]?\d+)?\t-?\d+(?:\.\d*)?(?:[eE][-+]?\d+)?\s*$')
+
+
+def _rpt_value(line, key):
+    """Return the text after ``key<TAB>`` on a raw .rpt line, or None if it isn't that key."""
+    prefix = key.encode() + b'\t'
+    if not line.startswith(prefix):
+        return None
+    return line[len(prefix):].rstrip(b'\r\n').decode('latin-1')
+
+
+def _rpt_spectra(lines, first, last):
+    """Find every mass-spectrum block in one sample record.
+
+    A block is the BPI/BPM pair and ProcDesc that come before a ``;Mass`` header, plus the
+    1-based line numbers of that header and of the ``}`` that closes its data rows.
+    Older OpenLynx reports have one block per sample; newer Xevo reports can have two.
+    """
+    spectra = []
+    current = {'ProcDesc': '', 'BPI': np.nan, 'BPM': np.nan}
+    i = first
+    while i < last:
+        line = lines[i]
+        for key in ('ProcDesc', 'BPI', 'BPM'):
+            value = _rpt_value(line, key)
+            if value is not None:
+                current[key] = value if key == 'ProcDesc' else float(value)
+        if line.startswith(b';Mass'):
+            j = i + 1
+            bad = 0
+            while j < last and not lines[j].lstrip().startswith(b'}'):
+                if not _RPT_DATA_LINE.match(lines[j]):
+                    bad += 1
+                j += 1
+            if bad:
+                logger.warning(f"{bad} unreadable line(s) in the spectrum starting at line {i + 1}; "
+                               "the report may be damaged there.")
+            spectra.append(dict(current, start=i + 1, end=j + 1))
+            current = {'ProcDesc': '', 'BPI': np.nan, 'BPM': np.nan}
+            i = j
+            continue
+        i += 1
+    return spectra
+
+
+def _choose_rpt_spectrum(spectra, sample):
+    """Pick the spectrum to analyze when a sample has more than one.
+
+    Prefer the last MaxEnt (deconvoluted) spectrum; otherwise take the last one, which is
+    what the new-Xevo notebook did by hand.
+    """
+    if len(spectra) <= 1:
+        return spectra[0] if spectra else None
+    maxent = [s for s in spectra if 'maxent' in s['ProcDesc'].lower()]
+    chosen = (maxent or spectra)[-1]
+    logger.info(f"Sample {sample}: {len(spectra)} spectra found; using the one at line {chosen['start']} "
+                f"({chosen['ProcDesc'][:40] or 'no ProcDesc'}).")
+    return chosen
+
+
 def extract_rpt_data(infile, samples_only=False, outdir="./"):
     """Extracts data from .rpt file and saves individual sample data to ./samples/ directory.
-    
+
+    Reads the report in one pass, so it works on both the older OpenLynx layout (one spectrum
+    per sample) and newer Xevo reports with two spectra per sample (see _choose_rpt_spectrum).
+
     Args:
         infile (str): Path to .rpt file.
         samples_only (bool): If True, only extract individual sample files.
@@ -723,123 +787,44 @@ def extract_rpt_data(infile, samples_only=False, outdir="./"):
 
     Returns:
         pd.DataFrame: DataFrame containing extracted sample information."""
-        
+
     file=infile
     print('\n\n',file)
-    
+
     if not os.path.exists(outdir):
         os.makedirs(outdir)
 
-    # extract key line numbers using grep
-    cmd=f"grep -n '^Sample\t[0-9]' '{file}' > {os.path.join(outdir, 'samples.txt')}"
-    os.system(cmd)
+    with open(file, "rb") as f:
+        content=f.readlines()
 
-    cmd=f"grep -n '^Well\t' '{file}' > {os.path.join(outdir, 'wells.txt')}"
-    os.system(cmd)
-
-    cmd=f"grep -n '^FileName\t' '{file}' > {os.path.join(outdir, 'fnames.txt')}"
-    os.system(cmd)
-
-    cmd=f"grep -n '^BPM\t' '{file}' > {os.path.join(outdir, 'bpms.txt')}"
-    os.system(cmd)
-
-    cmd=f"grep -n '^BPI\t' '{file}' > {os.path.join(outdir, 'bpis.txt')}"
-    os.system(cmd)
-
-    cmd=f"wc -l < '{file}' > {os.path.join(outdir, 'linenum.txt')}"
-    os.system(cmd)
-
-    cmd=f"grep -n '^;Mass' '{file}' > {os.path.join(outdir, 'massstart.txt')}"
-    os.system(cmd)
-
-    search='}'
-    cmd=f"grep -n {search} '{file}' > {os.path.join(outdir, 'massend.txt')}"
-    os.system(cmd)
-
-    # read in key line numbers
-    samples = pd.read_csv(os.path.join(outdir, 'samples.txt'), sep=':', header=None)
-    wells = pd.read_csv(os.path.join(outdir, 'wells.txt'), sep=':', header=None)
-    fnames = pd.read_csv(os.path.join(outdir, 'fnames.txt'), sep=':', header=None)
-    bpms = pd.read_csv(os.path.join(outdir, 'bpms.txt'), sep=':', header=None)
-    bpis = pd.read_csv(os.path.join(outdir, 'bpis.txt'), sep=':', header=None)
-
-    samples.columns=['linenum','Sample']
-    wells.columns=['linenum','Plate','Well']
-    fnames.columns=['linenum','Fname']
-    bpms.columns=['linenum','BPM']
-    bpis.columns=['linenum','BPI']
-
-    samples.Sample=samples.Sample.str.replace('Sample\t','').astype(int)
-    wells=wells[wells.Well.notna()]
-    wells.Plate=wells.Plate.str.replace('Well\t','').astype(int)
-
-    fnames.Fname=fnames.Fname.str.replace('FileName\t','')
-    bpms.BPM=bpms.BPM.str.replace('BPM\t','').astype(float)
-    bpis.BPI=bpis.BPI.str.replace('BPI\t','').astype(float)
-
-    wells['Sample']=np.nan
-    fnames['Sample']=np.nan
-    bpms['Sample']=np.nan
-    bpis['Sample']=np.nan
-
-    starts=pd.read_csv(os.path.join(outdir, 'massstart.txt'), sep=':', header=None)
-    starts.columns=['linenum','headers']
-
-    ends=pd.read_csv(os.path.join(outdir, 'massend.txt'), sep=':', header=None)
-    ends.columns=['linenum','value']
-
-    starts['Sample']=np.nan
-    ends['Sample']=np.nan
-
-    nl=pd.read_csv(os.path.join(outdir, 'linenum.txt'), header=None)
-    linenum=nl.iloc[0][0]+1
-
-    nsamples=len(samples)
-
-    # assign samples to wells, fnames, bpms, bpis, starts, ends
-    for i in range(nsamples):
-        if i==nsamples-1:
-            linerange=range(samples.linenum.loc[i], linenum)
-        else:
-            linerange=range(samples.linenum.loc[i], samples.linenum.loc[i+1]+1)
-        sample=samples.Sample.loc[i]
-        wells.loc[wells.linenum.isin(linerange), 'Sample']=sample
-        fnames.loc[fnames.linenum.isin(linerange), 'Sample']=sample
-        bpis.loc[bpis.linenum.isin(linerange), 'Sample']=sample
-        bpms.loc[bpms.linenum.isin(linerange), 'Sample']=sample
-        starts.loc[starts.linenum.isin(linerange), 'Sample']=sample
-        ends.loc[ends.linenum.isin(linerange), 'Sample']=sample
-
-    # get end rows for each sample, account for multiple end row matches
-    endrows=[]
-    for i in range(len(starts)):
-        if i==len(starts)-1:
-            linerange=range(starts.linenum.loc[i], linenum)
-        else:
-            linerange=range(starts.linenum.loc[i], starts.linenum.loc[i+1]+1)
-        tmp=pd.DataFrame(ends[ends.linenum.isin(linerange)].iloc[0]).T
-        endrows.append(tmp)
-    endrows=pd.concat(endrows)
-
-    # merge all together
-    df=samples.merge(wells, how='left', on='Sample', suffixes=['_sample','_well'])
-    df=df.merge(fnames, how='left', on='Sample')
-    df=df.merge(bpis, how='left', on='Sample', suffixes=['_fname','_bpi'])
-    df=df.merge(bpms, how='left', on='Sample')
-    df=df.merge(starts, how='left', on='Sample', suffixes=['_bpm','_start'])
-    df=df.merge(endrows, how='left', on='Sample')
-    df=df[['Sample', 'Plate', 'Well', 'Fname', 'BPI', 'BPM', 'linenum_start', 'linenum']]
-    df.columns=['Sample', 'Plate', 'Well', 'Fname', 'intensitymax', 'massatmax', 'linenum_start', 'linenum']
-    df.linenum_start=df.linenum_start.replace(np.nan, -99).astype(int)
+    sample_lines=[i for i, line in enumerate(content) if _RPT_SAMPLE.match(line)]
+    rows=[]
+    for n, first in enumerate(sample_lines):
+        last=sample_lines[n+1] if n+1 < len(sample_lines) else len(content)
+        sample=int(_rpt_value(content[first], 'Sample').split()[0])
+        plate, well, fname=np.nan, np.nan, np.nan
+        for line in content[first:last]:
+            value=_rpt_value(line, 'Well')
+            if value is not None and ':' in value and pd.isna(well):
+                plate, well=value.split(':', 1)
+                plate=int(plate)
+            value=_rpt_value(line, 'FileName')
+            if value is not None and pd.isna(fname):
+                fname=value
+        spectrum=_choose_rpt_spectrum(_rpt_spectra(content, first, last), sample)
+        rows.append({
+            'Sample': sample, 'Plate': plate, 'Well': well, 'Fname': fname,
+            'intensitymax': spectrum['BPI'] if spectrum else np.nan,
+            'massatmax': spectrum['BPM'] if spectrum else np.nan,
+            'linenum_start': spectrum['start'] if spectrum else -99,
+            'linenum': spectrum['end'] if spectrum else np.nan,
+        })
+    df=pd.DataFrame(rows, columns=['Sample', 'Plate', 'Well', 'Fname', 'intensitymax', 'massatmax', 'linenum_start', 'linenum'])
+    df.linenum_start=df.linenum_start.astype(int)
 
     # extract individual sample data files
     if not os.path.exists(os.path.join(outdir, 'samples')):
         os.makedirs(os.path.join(outdir, 'samples'))
-    
-    file=infile
-    
-    with open(file, "rb") as f:
-        content=f.readlines()
 
     for i, row in df.iterrows():
         if row.linenum_start==-99:
@@ -849,18 +834,9 @@ def extract_rpt_data(infile, samples_only=False, outdir="./"):
         else:
             samplefile=os.path.join(outdir, 'samples', f'Sample_{str(row.Sample).zfill(3)}_data.txt')
         with open(samplefile, "wb") as f:
-            f.writelines(content[row.linenum_start-1:row.linenum-1])
-    
-    # cleanup intermediate files
+            f.writelines(content[row.linenum_start-1:int(row.linenum)-1])
+
     if samples_only:
-        os.remove(os.path.join(outdir, 'samples.txt'))
-        os.remove(os.path.join(outdir, 'wells.txt'))
-        os.remove(os.path.join(outdir, 'fnames.txt'))
-        os.remove(os.path.join(outdir, 'bpms.txt'))
-        os.remove(os.path.join(outdir, 'bpis.txt'))
-        os.remove(os.path.join(outdir, 'linenum.txt'))
-        os.remove(os.path.join(outdir, 'massstart.txt'))
-        os.remove(os.path.join(outdir, 'massend.txt'))
         df[['Sample', 'Plate', 'Well', 'Fname', 'intensitymax', 'massatmax',]].to_csv(os.path.join(outdir, 'samples', 'extracted_samples.csv'), index=False)
 
         samples_dir = os.path.join(outdir, 'samples')
