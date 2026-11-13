@@ -133,3 +133,22 @@ def test_db_error_in_lot_lookup_is_not_turned_into_na(monkeypatch):
     monkeypatch.setattr(pm, 'read_platemap_block', lambda **k: lots.copy())
     with pytest.raises(OperationalError):
         pm.get_source_plate_info(row, dids.drop(columns='Lot'), None, None, [])
+
+
+def test_unreachable_hits_in_lot_lookup_is_not_turned_into_na(monkeypatch):
+    # _connect() turns a dead tunnel into ConnectionError; that must stop the
+    # run too, not fall through to the 'NA' fallback.
+    def dead(**k):
+        raise ConnectionError('Cannot reach HiTS. Is the SSH tunnel up?')
+    monkeypatch.setattr(pm, 'lookup_plate_by_lot_num', dead)
+    dids = pd.DataFrame({'SMDC_ID': [5.0], 'Destination well': ['A01']})
+    row = pd.Series({'Source_plate': 'use lots', 'Grid_num': 'P1'})
+    lots = pd.DataFrame({'row': ['A'], 'col': ['01'], 'Lot': [1.0]})
+    monkeypatch.setattr(pm, 'read_platemap_block', lambda **k: lots.copy())
+    with pytest.raises(ConnectionError, match='SSH tunnel'):
+        pm.get_source_plate_info(row, dids, None, None, [])
+
+
+def test_lot_lookup_by_user_needs_users():
+    with pytest.raises(ValueError, match='users='):
+        pm.lookup_lot_by_user(ids=['5'], users=None)

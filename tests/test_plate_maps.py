@@ -79,71 +79,49 @@ CASES = [
     '/leading/slash/run14.txt',
 ]
 
-fails = 0
-for c in CASES:
-    got, want = pm._normalize_share_path(c), original_normalize(c)
-    status = "ok " if got == want else "DIFF"
-    if got != want:
-        fails += 1
-    print(f"  [{status}] {c!r}\n         -> {got!r}")
-print(f"_normalize_share_path matches original on {len(CASES)-fails}/{len(CASES)} unchanged cases")
-assert fails == 0
+@pytest.mark.parametrize('case', CASES)
+def test_normalize_share_path_matches_original(case):
+    assert pm._normalize_share_path(case) == original_normalize(case)
 
-# The deliberate divergence: 'Montreal/Shared/' used to slice [17:] against a
-# 16-character prefix, eating the 'S' of 'SMDC' and producing a path that could
-# never resolve. This asserts the FIXED behaviour; if it ever fails, the
-# off-by-one has come back.
-print("\nMontreal/Shared/ off-by-one (deliberate divergence from original):")
-fixed = pm._normalize_share_path(FIXED_CASE)
-print(f"  was (buggy): {original_normalize(FIXED_CASE)!r}")
-print(f"  now (fixed): {fixed!r}")
-assert fixed == 'SMDC/run11.txt', f"expected 'SMDC/run11.txt', got {fixed!r}"
-assert original_normalize(FIXED_CASE) == 'MDC/run11.txt'  # documents what was wrong
 
-# Every branch must strip exactly its prefix and no more.
-for prefix in ['Montreal/Shared/', '/shared/', 'shared/', '/Volumes/Shared/',
-               'smb://montreal.ucsf.edu/shared/', 'smb://montreal/Shared/',
-               'mb://montreal.ucsf.edu/shared/', '/montreal.ucsf.edu/shared/']:
-    got = pm._normalize_share_path(prefix + 'SMDC/x.txt')
-    assert got == 'SMDC/x.txt', f"{prefix!r} -> {got!r}, expected 'SMDC/x.txt'"
-print("  every prefix branch strips exactly its own length")
+def test_montreal_shared_off_by_one_is_fixed():
+    # 'Montreal/Shared/' used to slice [17:] against a 16-character prefix,
+    # eating the 'S' of 'SMDC'. If this fails, the off-by-one has come back.
+    assert pm._normalize_share_path(FIXED_CASE) == 'SMDC/run11.txt'
+    assert original_normalize(FIXED_CASE) == 'MDC/run11.txt'  # documents what was wrong
 
-# No result may start with '/', or os.path.join would discard the share root.
-for c in CASES + [FIXED_CASE]:
-    assert not pm._normalize_share_path(c).startswith('/'), c
-print("no result starts with '/' (os.path.join stays safe)")
 
-# _assay_dir_name: the spellings that used to make the two functions disagree.
-print("\n_assay_dir_name across spellings:")
-for rid in [123, 123.0, '123', '123.0']:
-    print(f"  {rid!r:>10} -> {pm._assay_dir_name(rid, 'MyAssay')!r}")
-assert len({pm._assay_dir_name(r, 'MyAssay') for r in [123, 123.0, '123', '123.0']}) == 1
-print("  all four agree")
-print(f"  {'map'!r} -> {pm._assay_dir_name('map', 'MyAssay')!r}")
-assert pm._assay_dir_name('map', 'MyAssay') == 'MyAssay'
+@pytest.mark.parametrize('prefix', ['Montreal/Shared/', '/shared/', 'shared/', '/Volumes/Shared/',
+                                    'smb://montreal.ucsf.edu/shared/', 'smb://montreal/Shared/',
+                                    'mb://montreal.ucsf.edu/shared/', '/montreal.ucsf.edu/shared/'])
+def test_each_prefix_strips_exactly_itself(prefix):
+    assert pm._normalize_share_path(prefix + 'SMDC/x.txt') == 'SMDC/x.txt'
 
-# handle_zero_concentrations: drops zeros, no prompt.
-print("\nhandle_zero_concentrations:")
-df = pd.DataFrame({
-    'Destination well': ['A01', 'A02', 'A03', 'A04'],
-    '[compound] uM': [10.0, 1.0, 0.0, 0.0],
-})
-sys.stdin = None  # any input() call would now raise rather than hang
-out = pm.handle_zero_concentrations(df)
-print(f"  {len(df)} wells in, {len(out)} out, kept {out['[compound] uM'].tolist()}")
-assert len(out) == 2 and 0.0 not in out['[compound] uM'].tolist()
 
-out2 = pm.handle_zero_concentrations(pd.DataFrame({'[compound] uM': [10.0, 1.0]}))
-assert len(out2) == 2
-print("  no zeros -> unchanged")
+@pytest.mark.parametrize('case', CASES + [FIXED_CASE])
+def test_normalized_path_is_relative(case):
+    # A leading '/' would make os.path.join discard the share root.
+    assert not pm._normalize_share_path(case).startswith('/')
 
-# read_platemap_block now rejects a bad size instead of UnboundLocalError.
-try:
-    pm.read_platemap_block(plate_map=pd.DataFrame(), block=0, size=1596)
-except ValueError as e:
-    print(f"\nread_platemap_block(size=1596) -> ValueError: {e}")
 
-print("\nALL SMOKE TESTS PASSED")
+def test_assay_dir_name_agrees_across_spellings():
+    assert len({pm._assay_dir_name(r, 'MyAssay') for r in [123, 123.0, '123', '123.0']}) == 1
+    assert pm._assay_dir_name('map', 'MyAssay') == 'MyAssay'
+
+
+def test_handle_zero_concentrations_drops_zeros_without_prompting(monkeypatch):
+    monkeypatch.setattr('builtins.input', lambda *a: pytest.fail('handle_zero_concentrations prompted'))
+    df = pd.DataFrame({'Destination well': ['A01', 'A02', 'A03', 'A04'],
+                       '[compound] uM': [10.0, 1.0, 0.0, 0.0]})
+    out = pm.handle_zero_concentrations(df)
+    assert out['[compound] uM'].tolist() == [10.0, 1.0]
+    assert len(pm.handle_zero_concentrations(pd.DataFrame({'[compound] uM': [10.0, 1.0]}))) == 2
+
+
+def test_read_platemap_block_rejects_bad_size():
+    # A bad size must raise ValueError, not UnboundLocalError or a silent pass.
+    with pytest.raises(ValueError, match='1596'):
+        pm.read_platemap_block(plate_map=pd.DataFrame(), block=0, size=1596)
 
 
 def _dr_folder(tmp_path):
@@ -240,3 +218,23 @@ def test_share_root_env_and_standard_mounts(monkeypatch, tmp_path):
 def test_wsl_and_windows_paths_normalize():
     assert pm._normalize_share_path('/mnt/z/SMDC/run.csv') == 'SMDC/run.csv'
     assert pm._normalize_share_path(r'Z:\SMDC\run.csv') == 'SMDC/run.csv'
+
+
+def _block_sheet(nrows, ncols, nblocks=2):
+    labels = pm._row_labels(nrows)
+    rows = []
+    for b in range(nblocks):
+        rows.append([None] + list(range(1, ncols + 1)))           # column-number header
+        rows += [[r] + [f'{b}{r}{c}' for c in range(1, ncols + 1)] for r in labels]
+        rows.append([None] * (ncols + 1))                         # blank between blocks
+    return pd.DataFrame(rows)
+
+
+@pytest.mark.parametrize('size, nrows, ncols', [(96, 8, 12), (384, 16, 24), (1536, 32, 48)])
+def test_read_platemap_block_infers_plate_size(size, nrows, ncols):
+    sheet = _block_sheet(nrows, ncols)
+    assert pm._infer_platemap_size(sheet) == size
+    got = pm.read_platemap_block(plate_map=sheet, block=1, value_name='v')
+    assert len(got) == size
+    last = pm._row_labels(nrows)[-1]
+    assert got.iloc[-1].tolist() == [last, f'{ncols:02d}', f'1{last}{ncols}']

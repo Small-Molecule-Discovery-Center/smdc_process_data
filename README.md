@@ -18,8 +18,9 @@ A set of functions to preprocess various kinds of raw data for upload or further
 
 #### database_interactions
 Notebooks and modules for querying HiTS, making plate maps and entering new data.
-Open notebooks from this folder (after `uv sync` or `python -m pip install -e .`, see below) so `import plate_maps`
-etc. work without any `sys.path` edits.
+After `uv sync` or `pip install -e .` (see below), import these from any folder with
+`from database_interactions import plate_maps, check_grid_num`. From inside this folder the flat
+`import plate_maps` also works.
 
 - **`prepare_hits_upload.ipynb`**: the operator notebook for a HiTS data upload. It follows
   Part C and E of the data upload SOP: build the `toload` folders, run the EnVision barcode /
@@ -58,6 +59,15 @@ Data visualizations on SMDC activities over time
 #### data
 example data files for PAMPA and Bruker SPR
 
+### Salt and solvate extraction
+
+Use `database_interactions/extract_salts_solvates.py`
+before compound registration. It reads the salt/solvate reference tables
+(`INV_LOT_SALT`, `INV_LOT_SOLVATE`) from the database when you pass a SQLAlchemy
+`engine=` (SELECT only, in a read-only transaction), or from CSV exports of those
+tables, which also act as a fallback if the database read fails. Run the tests with
+`pytest tests/test_extract_salts_solvates.py` from the repo root (needs rdkit).
+
 ### Install shared utilities
 
 From this checkout, run `uv sync`, which builds `.venv` with this repo, everything the plate
@@ -67,21 +77,26 @@ optional pieces: `'.[upload]'` adds `rapidfuzz` for fuzzy barcode matching in th
 check, and `'.[tethering]'` adds Pillow for the tethering plots.
 This is the canonical source of the `smdc-data-proc` distribution, formerly
 installed from data-proc. Reinstall from here in each consuming environment.
-Imports remain `import raw_data_parsers`, `import mysql_cnx`, and
-`from process_data import tethering_analysis`.
+The install name `smdc-data-proc` is not an import name. Imports are `import raw_data_parsers`,
+`import mysql_cnx`, `from process_data import tethering_analysis` and
+`from database_interactions import plate_maps` (also `check_grid_num`, `inventory_registration`,
+`safe_register`). Installing into another environment (for example a separate Notebooks venv)
+works the same way: activate it, then run `uv pip install -e <path to this repo>`. Rerun that after
+`pyproject.toml` changes, and restart the Jupyter kernel.
 
-The scripts in `database_interactions/` and `data_viz/` (`plate_maps`, `check_grid_num`,
-`inventory_registration`, `safe_register`, `plot_curves`, ...) are plain modules, not a
-package. From a notebook anywhere, including outside this repo, add one line first:
+`database_interactions` and `data_viz` are installed packages, so from a notebook anywhere,
+including outside this repo, import them directly:
 
 ```python
-import smdc_paths          # installed by pip install -e .; finds this checkout
-import plate_maps as pm
-import plot_curves as pc
+from database_interactions import plate_maps as pm
+from data_viz import plot_curves as pc
 ```
 
-No `sys.path.append('/Users/.../data-proc')` lines are needed any more. data-proc is retired,
-and everything it held now lives here.
+`smdc_paths` is a legacy shim kept for old notebooks that use flat names such as
+`import plate_maps`. Running `import smdc_paths` first puts the module folders on `sys.path`.
+New code should use the package imports above. No `sys.path.append('/Users/.../data-proc')`
+lines are needed. Code is moving out of data-proc piece by piece; whatever has been migrated
+lives here, and the data-proc copy is removed only after that piece is confirmed.
 
 `raw_data_parsers.extract_rpt_data(infile, samples_only=False, outdir="./")`
 extracts Xevo sample metadata and writes spectra to `outdir/samples`.
@@ -92,8 +107,8 @@ MySQL defaults to localhost and uses `mysql_user`, `mysql80_pwd`, and
 `mysql80_port`. Remote hosts use `mysql_user`, `mysql_pwd`, and `mysql_port`.
 The database defaults to `hits_db` or `QB3_HiTS`. Environment variables are
 read when creating an engine, so importing the module needs no credentials.
-Tethering analysis still uses the separate data-proc plate_maps/plot_curves
-helpers for database analysis and plotting.
+Tethering analysis imports `plate_maps` and `plot_curves` from this repo
+(`database_interactions` and `data_viz`), not from data-proc.
 
 ### Tests
 

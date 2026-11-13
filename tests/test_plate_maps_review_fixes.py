@@ -90,6 +90,61 @@ def test_clean_up_moves_and_allows_identical_rerun(tmp_path, monkeypatch):
     assert (assay / 'loaded' / '20260101' / 'grid_num.txt').read_text() == 'grid_num\nP1\n'
 
 
+def _batch_with_original(tmp_path, monkeypatch):
+    share = tmp_path / 'share'
+    share.mkdir()
+    (share / 'x.csv').write_text('original')
+    assay = _batch(tmp_path / 'out', 'grid_num\nP1\n')
+    (assay / 'toload_0' / '20260101' / 'x.csv').write_text('tidied copy')
+    monkeypatch.setattr(pm, '_read_info_sheet', lambda infile: (None, _info()))
+    return share, assay
+
+
+def test_clean_up_deletes_original_only_after_the_move(tmp_path, monkeypatch):
+    share, assay = _batch_with_original(tmp_path, monkeypatch)
+    pm.clean_up_folders('info.xlsx', basedir=str(tmp_path / 'out'), delete_orig=True, share_root=str(share))
+    assert (assay / 'loaded' / '20260101' / 'x.csv').read_text() == 'tidied copy'
+    assert not (share / 'x.csv').exists()
+
+
+def test_clean_up_keeps_original_when_the_move_fails(tmp_path, monkeypatch):
+    share, assay = _batch_with_original(tmp_path, monkeypatch)
+
+    def broken_copy(*a, **k):
+        raise OSError('share went away')
+    monkeypatch.setattr(pm, '_copy_tree', broken_copy)
+    with pytest.raises(OSError, match='share went away'):
+        pm.clean_up_folders('info.xlsx', basedir=str(tmp_path / 'out'), delete_orig=True, share_root=str(share))
+    assert (share / 'x.csv').read_text() == 'original'
+
+
+def test_clean_up_keeps_original_whose_own_copy_is_missing(tmp_path, monkeypatch):
+    # Two originals share a name; only the one whose copy reached loaded/ goes.
+    share = tmp_path / 'share'
+    (share / 'a').mkdir(parents=True)
+    (share / 'b').mkdir()
+    (share / 'a' / 'run.csv').write_text('a')
+    (share / 'b' / 'run.csv').write_text('b')
+    assay = _batch(tmp_path / 'out', 'grid_num\nP1\n')
+    (assay / 'toload_0' / '20260101' / 'run.csv').write_text('a')
+    info = pd.DataFrame({'Raw_assay_ID': ['2863', '2863'], 'Assay_name': ['test', 'test'],
+                         'Date_of_screen': ['20260101', '20260102'],
+                         'Raw_data_file': ['a/run.csv', 'b/run.csv'], 'Grid_num': ['P1', 'P2']})
+    monkeypatch.setattr(pm, '_read_info_sheet', lambda infile: (None, info))
+    pm.clean_up_folders('info.xlsx', basedir=str(tmp_path / 'out'), delete_orig=True, share_root=str(share))
+    assert not (share / 'a' / 'run.csv').exists()
+    assert (share / 'b' / 'run.csv').read_text() == 'b'
+
+
+def test_clean_up_stops_if_the_copy_is_incomplete(tmp_path, monkeypatch):
+    share, assay = _batch_with_original(tmp_path, monkeypatch)
+    monkeypatch.setattr(pm, '_copy_file', lambda src, dst: None)  # copies nothing, silently
+    with pytest.raises(OSError, match='incomplete'):
+        pm.clean_up_folders('info.xlsx', basedir=str(tmp_path / 'out'), delete_orig=True, share_root=str(share))
+    assert (assay / 'toload_0' / '20260101' / 'x.csv').exists()
+    assert (share / 'x.csv').read_text() == 'original'
+
+
 # --- plate-map fixtures -------------------------------------------------------
 import io
 import string
@@ -220,6 +275,7 @@ def test_folder_pipeline_passes_each_plate_its_own_row(tmp_path, monkeypatch):
         return pd.DataFrame({'Destination well': ['A01'], 'Sci_PosControl': [False], 'Sci_NegControl': [False]})
     monkeypatch.setattr(pm, '_read_info_sheet', lambda infile: ({}, info))
     monkeypatch.setattr(pm, 'make_dr_platemaps', fake_make)
+    monkeypatch.setattr(pm, 'check_destination_plates', lambda info: None)
     (tmp_path / 'out' / '1_older_assay' / 'toload_0' / '20250101').mkdir(parents=True)
     result = pm.make_dr_platemaps_and_folders('info.xlsx', basedir=str(tmp_path / 'out'), share_root=str(share))
     assert seen == {'P1': 'use map', 'P2': 'use lots', 'P3': 'XYZ-MA01', 'P4': 'XYZ-MA01'}
@@ -227,6 +283,7 @@ def test_folder_pipeline_passes_each_plate_its_own_row(tmp_path, monkeypatch):
     assert pm.load_folders(result) == [str(folder)]
     assert (folder / 'grid_num.txt').read_text().split() == ['grid_num', 'P1', 'P2', 'P3', 'P4']
     assert (folder / 'run.csv').exists()
+    assert pm.raw_files(result) == [str(folder / 'run.csv')]
 
 
 def _dids():
@@ -408,3 +465,230 @@ def test_folder_pipeline_stops_before_writing_when_source_plate_is_blank(tmp_pat
         pm.make_dr_platemaps_and_folders('x.xlsx', basedir=str(tmp_path / 'out'), share_root=str(tmp_path))
     assert not (tmp_path / 'out').exists()
     assert pm.source_plate_barcodes(info) == []
+
+
+@pytest.mark.parametrize('value,mode', [
+    ('', 'blank'), (np.nan, 'blank'),
+    ('NA', 'na'), ('n/a', 'na'), ('N.A.', 'na'), ('none', 'na'), ('n.a. (by hand)', 'na'),
+    ('use my name', 'na'), ('Use My Name', 'na'), ('use users', 'na'),
+    ('use lots', 'lot'), ('Lots', 'lot'), ('use map', 'map'), ('MAP', 'map'),
+    ('use biomek / use echo', 'biomek'),
+    ('SMDC-MAP-384-01-Eco1', 'barcodes'), ('PLOT12-MA01; X-MA01', 'barcodes'), ('NA-0042', 'barcodes'),
+])
+def test_source_plate_keywords_are_not_matched_inside_barcodes(value, mode):
+    assert pm._source_plate_mode(value) == mode
+
+
+def test_unknown_use_keyword_is_an_error():
+    with pytest.raises(ValueError, match="Unknown Source_plate keyword"):
+        pm._source_plate_mode('use plates')
+
+
+def test_info_sheet_keeps_na_typed_in_source_plate(tmp_path):
+    path = tmp_path / 'upload.xlsx'
+    info = pd.DataFrame({'Grid_num': ['P1', 'P2', 'P3'], 'Source_plate': ['NA', 'n/a', None],
+                         'Raw_assay_ID': [1, 1, 1], 'Assay_name': ['a'] * 3,
+                         'Date_of_screen': [20260101] * 3, 'Raw_data_file': ['r.csv'] * 3})
+    with pd.ExcelWriter(path) as xw:
+        info.to_excel(xw, sheet_name='Info', index=False)
+    _, read = pm._read_info_sheet(str(path))
+    assert read.Source_plate.iloc[0] == 'NA' and read.Source_plate.iloc[1] == 'n/a'
+    assert pd.isna(read.Source_plate.iloc[2])
+    with pytest.raises(ValueError, match='blank for P3'):
+        pm._check_source_plates(read)
+
+
+def test_source_plate_barcodes_skips_keywords_but_keeps_map_barcodes():
+    info = pd.DataFrame({'Source_plate': ['use lots', 'NA', 'SMDC-MAP-01; B2', 'B2\nB3']})
+    assert pm.source_plate_barcodes(info) == ['SMDC-MAP-01', 'B2', 'B3']
+
+
+def test_source_plate_help_lists_exact_options_in_quotes():
+    for option in ('"use lots"', '"use map"', '"use biomek"', '"NA"', '"n/a"', '"n.a."', '"none"', '"use my name"', '";"'):
+        assert option in pm.SOURCE_PLATE_HELP
+
+
+def test_unknown_source_plate_barcode_says_so(monkeypatch):
+    empty = pd.DataFrame(columns=['IW_COORDINATES', 'Vendor_Alias', 'SMDC_ID', 'Common_Name',
+                                  'Alias_Type', 'Lot_Num', 'Conc_uM', 'Conc_nM', 'SMILES'])
+    monkeypatch.setattr(pm.pd, 'read_sql', lambda *a, **k: empty.copy())
+    with pytest.raises(ValueError, match="'NOPE-MA01' has no wells in HiTS"):
+        pm.make_platemaps_from_barcode('NOPE-MA01', outdir=None, cnx=object())
+
+
+def test_check_dr_plates_finds_wells_that_differ_from_the_input(tmp_path, monkeypatch):
+    def ids(r, c):
+        if c == 1:
+            return 'DMSO'
+        if (r, c) == ('A', 2):
+            return '12346-1'
+        return 100 + c if r == 'A' else None
+    sheet = _sheet([ids])
+    dr = pd.DataFrame({'Destination well': [f'A{c:02d}' for c in range(2, 25)],
+                       'SMDC_ID': [12346.0] + [100.0 + c for c in range(3, 25)],
+                       'Lot': [1.0] * 23, 'Source plate': ['S1'] * 23, '[compound] uM': [10.0] * 23})
+    dr.loc[dr['Destination well'] == 'A05', 'SMDC_ID'] = 999.0     # wrong compound
+    dr = pd.concat([dr, pd.DataFrame({'Destination well': ['B01'], 'SMDC_ID': [5.0], 'Lot': [np.nan],
+                                      'Source plate': ['S1'], '[compound] uM': [10.0]})])  # stray well
+    path = tmp_path / 'P1_DR_plate.xlsx'
+    dr.to_excel(path, index=False)
+    monkeypatch.setattr(pm, '_read_info_sheet', lambda infile: ({'P1': sheet}, None))
+    info = pd.DataFrame({'Grid_num': ['P1']})
+    info.attrs.update(dr_plates=[('P1', str(path))], infile='in.xlsx')
+
+    summary, mism = pm.check_dr_plates(info, draw=True)   # draws too (Agg backend in tests)
+    assert sorted(mism['Destination well']) == ['A05', 'B01']
+    row = summary.iloc[0]
+    assert (row['compound wells (input)'], row['compound wells (DR file)']) == (23, 24)
+    assert (row['mismatched wells'], row['no Lot']) == (2, 1)
+
+
+def test_check_dr_plates_draw_takes_a_count_or_all():
+    assert pm._plates_to_draw(1, 5) == 1
+    assert pm._plates_to_draw('all', 5) == 5 and pm._plates_to_draw('ALL', 5) == 5
+    assert pm._plates_to_draw(True, 5) == 5
+    assert pm._plates_to_draw(0, 5) == 0 and pm._plates_to_draw(None, 5) == 0 and pm._plates_to_draw(False, 5) == 0
+    assert pm._plates_to_draw(9, 3) == 3
+    with pytest.raises(ValueError):
+        pm._plates_to_draw('some', 3)
+
+
+def test_check_dr_plates_needs_the_info_step_2_returned():
+    with pytest.raises(ValueError, match='DR plate files'):
+        pm.check_dr_plates(pd.DataFrame({'Grid_num': ['P1']}))
+
+
+def test_share_root_asks_for_the_mount_when_wsl_has_no_z(monkeypatch):
+    monkeypatch.delenv('smdc_share_root', raising=False)
+    monkeypatch.setattr(pm.os.path, 'isdir', lambda p: False)
+    monkeypatch.setattr(pm, '_is_wsl', lambda: True)
+    with pytest.raises(FileNotFoundError, match='not mounted at /mnt/z.*SHARE_ROOT'):
+        pm.default_share_root()
+    monkeypatch.setattr(pm, '_is_wsl', lambda: False)
+    if pm.os.name != 'nt':
+        with pytest.raises(FileNotFoundError, match="Can't find the Montreal share.*SHARE_ROOT"):
+            pm.default_share_root()
+
+
+def test_share_path_maps_windows_paths_and_names_missing_ones(tmp_path):
+    (tmp_path / 'SMDC').mkdir()
+    (tmp_path / 'SMDC' / 'a.xlsx').write_text('x')
+    assert pm.share_path(r'Z:\SMDC\a.xlsx', str(tmp_path), 'INFILE') == os.path.join(str(tmp_path), 'SMDC/a.xlsx')
+    with pytest.raises(FileNotFoundError, match=r"INFILE not found: 'Z:\\\\SMDC\\\\b.xlsx' \(looked for"):
+        pm.share_path(r'Z:\SMDC\b.xlsx', str(tmp_path), 'INFILE')
+
+
+def test_zero_conc_control_wells_are_kept():
+    dids = pd.DataFrame({'Destination well': ['A01', 'J01', 'K01', 'L01'],
+                         '[compound] uM': [10.0, 0.0, 0.0, 0.0],
+                         'Sci_PosControl': [False, True, False, False],
+                         'Sci_NegControl': [False, False, True, False]})
+    out = pm.handle_zero_concentrations(dids)
+    assert out['Destination well'].tolist() == ['A01', 'J01', 'K01']   # only the truly empty well goes
+    assert out['[compound] uM'].isna().tolist() == [False, True, True]  # controls have no conc
+
+
+def test_concentrations_that_print_the_same_become_equal():
+    dids = pd.DataFrame({'[compound] uM': [83.33333333333333, 83.3333333333333, 250.0, np.nan, 0.03810394]})
+    out = pm._round_concentrations(dids)['[compound] uM']
+    assert out[0] == out[1] and out[2] == 250.0 and np.isnan(out[3]) and out[4] == 0.03810394
+
+
+def test_old_or_future_screen_dates_are_flagged(caplog, tmp_path):
+    info = pd.DataFrame({'Grid_num': ['P1', 'P2', 'P3', 'P4'], 'Raw_assay_ID': [2875, 2974, 2974, 3001],
+                         'Assay_name': ['a', 'b', 'b', 'c'],
+                         'Date_of_screen': [20240605, 20240611, 20240611, 20261101],
+                         'Raw_data_file': ['x.rpt'] * 4})
+    with caplog.at_level('WARNING'):
+        flagged = pm.check_screen_dates(info, today='2026-11-12', share_root=str(tmp_path))
+    assert flagged.Grid_num.tolist() == ['P1', 'P2', 'P3']               # 3001 is 11 days old: fine
+    assert '2 assay version(s)' in caplog.text and 'plates P2, P3' in caplog.text
+    assert 'historical' in caplog.text
+    future = pm.check_screen_dates(info.assign(Date_of_screen=20261201), today='2026-11-12', share_root=str(tmp_path))
+    assert set(future.reason) == {'in the future'}
+
+
+def test_screen_date_is_checked_against_the_envision_file(tmp_path):
+    (tmp_path / 'run.csv').write_text('Plate information,,\nAssay Started: ,,,,6/11/2026 2:29:18 PM,,\n')
+    info = pd.DataFrame({'Grid_num': ['P1', 'P2'], 'Raw_assay_ID': [1, 2], 'Assay_name': ['a', 'b'],
+                         'Date_of_screen': [20240611, 20260611], 'Raw_data_file': ['run.csv', r'Z:\run.csv']})
+    flagged = pm.check_screen_dates(info, today='2026-11-12', share_root=str(tmp_path))
+    assert flagged.Grid_num.tolist() == ['P1']                          # P2 matches the file, though 5 months old
+    assert flagged.reason[0] == 'the EnVision file says it ran 2026-06-11'
+
+
+def test_destination_plates_duplicated_or_already_in_hits(monkeypatch, caplog):
+    info = pd.DataFrame({'Grid_num': ['P1', 'P2;P3', 'P1']})
+    seen = {}
+
+    def fake_sql(query, cnx, params):
+        seen.update(params)
+        return pd.DataFrame({'IP_BARCODE': ['P2'], 'IP_GRID_NUM': ['P2'], 'IP_INS_DATE': ['2026-06-11']})
+    monkeypatch.setattr(pm.pd, 'read_sql', fake_sql)
+    with caplog.at_level('WARNING'):
+        out = pm.check_destination_plates(info, cnx=object())
+    assert out['duplicated'] == ['P1'] and seen['g'] == ['P1', 'P2', 'P3']
+    assert 'listed more than once' in caplog.text and 'already exist in HiTS' in caplog.text and 'P2 (grid_num P2' in caplog.text
+
+
+def test_step_2_warns_only_about_envision_block_order(tmp_path, caplog):
+    header = ',' + ','.join(f'{c:02d}' for c in range(1, 25))
+    plate = ['Plate information', 'Plate,Repeat,Barcode', '1,1,']
+    bg = ['Background information', 'Plate,Label', '1,x', '1,y']
+    res = ['Results for ch1', header] + [','.join([r] + ['1'] * 24) for r in 'ABCDEFGHIJKLMNOP']
+    good = plate + [''] + bg + [''] + res + ['', '', 'Basic assay information ,']
+    pasted = list(good)
+    pasted[2] += ',,,,,,9'                         # hand-pasted value: tidy reports it, not step 2
+    results_first = res + [''] + plate + [''] + bg + ['', '', 'Basic assay information ,']
+    for name, lines in [('good', good), ('pasted', pasted), ('results_first', results_first)]:
+        (tmp_path / f'{name}.csv').write_text('\n'.join(lines) + '\n')
+    with caplog.at_level('WARNING'):
+        assert pm._warn_if_envision_blocks_out_of_order(str(tmp_path / 'good.csv')) == []
+        assert pm._warn_if_envision_blocks_out_of_order(str(tmp_path / 'pasted.csv')) == []
+    assert caplog.text == ''
+    with caplog.at_level('WARNING'):
+        assert pm._warn_if_envision_blocks_out_of_order(str(tmp_path / 'results_first.csv'))
+    assert 'ordered wrong' in caplog.text and 're-export' in caplog.text and 'tidy step' in caplog.text
+
+
+def test_write_to_a_locked_file_says_to_close_it(tmp_path, monkeypatch):
+    import shutil
+    def locked(*a, **k):
+        raise PermissionError(13, 'Permission denied')
+    monkeypatch.setattr(shutil, 'copyfile', locked)
+    src = tmp_path / 'raw.csv'
+    src.write_text('x\n')
+    with pytest.raises(PermissionError, match='open in another program.*Close it'):
+        pm._copy_file(str(src), str(tmp_path / 'copy.csv'))
+
+
+def test_check_dr_concentrations_flags_one_dilution_typed_two_ways(tmp_path, caplog):
+    def dr(name, concs, assay=2974):
+        path = tmp_path / f'{name}_DR_plate.xlsx'
+        pd.DataFrame({'SMDC_ID': [1] * len(concs), 'Destination well': [f'A{i + 1:02d}' for i in range(len(concs))],
+                      '[compound] uM': concs, 'Assay ID': assay}).to_excel(path, index=False)
+        return (name, str(path))
+    series = [250.0, 83.33333333333333, 27.77777777777778, 0.0381039]
+    info = pd.DataFrame()
+    info.attrs['dr_plates'] = [dr('p4309', series), dr('p4310', [250, 83.3333333333333, 27.77777777777778, 0.0381039]),
+                               dr('p4298', [83.3333], assay=2875)]
+    with caplog.at_level('WARNING'):
+        assert pm.check_dr_concentrations(info).empty      # equal at 1 fM, or in another assay
+    assert caplog.text == ''
+    info.attrs['dr_plates'].append(dr('p4311', [83.3333]))        # same assay, differs by 4e-7 relative
+    with caplog.at_level('WARNING'):
+        out = pm.check_dr_concentrations(info)
+    assert len(out) == 1 and out['Assay ID'].iloc[0] == 2974
+    assert out['conc 1 uM'].iloc[0] == pytest.approx(83.3333) and 'p4311 A01' in out['wells with conc 1'].iloc[0]
+    assert 'typed two ways' in caplog.text and '83.3333 vs 83.333333333' in caplog.text
+
+
+def test_check_dr_concentrations_catches_pasted_7_decimals(tmp_path):
+    paths = []
+    for name, c in [('a', 27.77777777777778), ('b', 27.7777778)]:      # 22 fM apart: two stored values
+        p = tmp_path / f'{name}.xlsx'
+        pd.DataFrame({'Destination well': ['A01'], '[compound] uM': [c], 'Assay ID': [1]}).to_excel(p, index=False)
+        paths.append((name, str(p)))
+    info = pd.DataFrame()
+    info.attrs['dr_plates'] = paths
+    assert len(pm.check_dr_concentrations(info)) == 1

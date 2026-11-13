@@ -88,6 +88,7 @@ import logging
 import shutil
 import filecmp
 import re
+import datetime
 from sqlalchemy import bindparam, text
 from sqlalchemy.exc import DBAPIError
 
@@ -102,10 +103,22 @@ import logging
 # output visible. That is the job the old basicConfig(force=True) was doing, by
 # tearing out Jupyter's handler; setting the level instead leaves other people's
 # logging alone.
-logging.basicConfig(level=logging.INFO)
+#
+# The default is WARNING, so new operators only see what needs their attention.
+# The pipeline logs its routine decisions at INFO: call set_log_level('INFO')
+# (the notebook's LOG_LEVEL setting) to see them while debugging.
+logging.basicConfig(level=logging.WARNING)
 logger = logging.getLogger()  # root logger
-logger.setLevel(logging.INFO)  # the pipeline logs its decisions at INFO
+logger.setLevel(logging.WARNING)
 logging.getLogger("matplotlib").setLevel(logging.WARNING)  # root is noisy; mute matplotlib
+
+
+
+def set_log_level(level='WARNING'):
+    """Show pipeline messages at this level and above: 'WARNING' (default,
+    only what needs attention) or 'INFO' (every step, for debugging)."""
+    logging.getLogger().setLevel(getattr(logging, str(level).upper()) if isinstance(level, str) else level)
+
 
 sns.set_theme(rc={'figure.dpi': 150, 'figure.figsize': (5, 3.75)})
 
@@ -116,14 +129,31 @@ from mysql_cnx import create_mysql_cnx
 # test database, which is right for writes but stale for plate lookups).
 READ_DB = os.environ.get('hits_db') or 'QB3_HiTS'
 
+def _is_wsl():
+    """True inside Windows Subsystem for Linux."""
+    if os.environ.get('WSL_DISTRO_NAME'):
+        return True
+    try:
+        with open('/proc/version') as f:
+            return 'microsoft' in f.read().lower()
+    except OSError:
+        return False
+
+
+SHARE_ROOT_HELP = ("Set SHARE_ROOT in the notebook's settings cell (or pass share_root=, or set the "
+                   "smdc_share_root environment variable) to the folder where the Montreal share is "
+                   "mounted, e.g. '/mnt/z/' in WSL, '/Volumes/Shared/' on a Mac, 'Z:/' on Windows.")
+
+
 def default_share_root():
     """Where the Montreal share (raw instrument data) is mounted on this machine.
 
     Order: the `smdc_share_root` environment variable if set; else the first
     of the standard mounts that exists: `/Volumes/Shared/` (macOS) or
     `/mnt/z/` (WSL, i.e. Windows drive Z:); else `Z:/` on native Windows.
-    Pass `share_root=` to make_dr_platemaps_and_folders / clean_up_folders to
-    use a different drive.
+    The expected setup is WSL on Windows with Z: mounted at /mnt/z. Anywhere
+    else, or when /mnt/z isn't mounted, this raises and asks for the mount
+    point instead of guessing. Pass `share_root=` to use a different drive.
     """
     env = os.environ.get('smdc_share_root')
     if env:
@@ -133,9 +163,13 @@ def default_share_root():
             return candidate
     if os.name == 'nt':
         return 'Z:/'
-    raise FileNotFoundError(
-        "Can't find the Montreal share. Mount it (macOS: /Volumes/Shared, Windows/WSL: Z: = /mnt/z) "
-        "or pass share_root='<mount point>' (or set the smdc_share_root environment variable).")
+    if _is_wsl():
+        raise FileNotFoundError(
+            "This is WSL, but the Montreal share is not mounted at /mnt/z. Mount it with "
+            "`sudo mkdir -p /mnt/z && sudo mount -t drvfs Z: /mnt/z -o uid=$(id -u),gid=$(id -g)` "
+            "(see the WSL setup doc for the /etc/fstab line), or, if it is mounted somewhere else: "
+            + SHARE_ROOT_HELP)
+    raise FileNotFoundError("Can't find the Montreal share. " + SHARE_ROOT_HELP)
 
 
 def _connect():
@@ -293,7 +327,8 @@ def assign_wells_by_idx(df, plate_col='Destination Plate', well_col='Destination
 
 ###############################################################################
 def draw_plate_heatmap(barcode='OTPARP1234-Eco1', df=None, wells='Well', values='SMDC_ID', labels='SMDC_ID',
-                       plate_size=None, center=None, vmin=None, vmax=None, width=25, outdir=None, engine=None):
+                       plate_size=None, center=None, vmin=None, vmax=None, width=25, outdir=None, engine=None,
+                       cbar=None, cmap=None):
     """
     Draw a heatmap of one plate, for visual QC of a layout or a result.
 
@@ -311,6 +346,8 @@ def draw_plate_heatmap(barcode='OTPARP1234-Eco1', df=None, wells='Well', values=
         width (int): Figure width in inches; height is width/3.
         outdir (path, optional): If given, save <barcode>.png here and close the
             figure instead of leaving it open.
+        cbar (bool, optional): show the colourbar. Default: on, except for SMDC IDs.
+        cmap (optional): passed through to sns.heatmap.
     Returns:
         tuple: (df, pl, plabels) - the cleaned long-form frame, the pivoted
             value grid, and the pivoted label grid. Returned mainly for
@@ -361,7 +398,7 @@ def draw_plate_heatmap(barcode='OTPARP1234-Eco1', df=None, wells='Well', values=
     df.Row = pd.Categorical(df.Row, categories=plate_rows_dict[plate_size], ordered=True)
     df.Col = pd.Categorical(df.Col, categories=plate_cols_dict[plate_size], ordered=True)
 
-    cbar = True
+    cbar_override, cbar = cbar, True
     pl = df.pivot_table(columns='Col', index='Row', values=values, dropna=False, observed=False)
     pl = pl.astype(float)
     if labels is not None:
@@ -379,19 +416,24 @@ def draw_plate_heatmap(barcode='OTPARP1234-Eco1', df=None, wells='Well', values=
             cbar = False
     else:
         plabels = None
+    if cbar_override is not None:
+        cbar = cbar_override
 
-    if cbar:
-        fig, (ax, cax) = plt.subplots(1, 2, figsize=(width, width / 3), gridspec_kw={"width_ratios": [1, .01]})
-    else:
-        fig, ax = plt.subplots(1, figsize=(width, width / 3))
-        cax = None
-    sns.heatmap(pl, annot=plabels, fmt='s', linewidth=1, linecolor='white', ax=ax, cbar_ax=cax, cbar=cbar,
-                center=center, vmin=vmin, vmax=vmax,
+    # Always reserve the colourbar column, hidden when there is no colourbar,
+    # so every plate drawn at the same width lines up well for well (e.g. the
+    # layout and concentration maps of one DR plate, drawn one above the other).
+    fig, (ax, cax) = plt.subplots(1, 2, figsize=(width, width / 3), gridspec_kw={"width_ratios": [1, .01]})
+    if not cbar:
+        cax.set_visible(False)
+    sns.heatmap(pl, annot=plabels, fmt='s', linewidth=1, linecolor='white', ax=ax, cbar_ax=cax if cbar else None, cbar=cbar,
+                center=center, vmin=vmin, vmax=vmax, cmap=cmap,
                 annot_kws={"size": 7}
                 )
     ax.grid(which='major')
     ax.set_title(f"{barcode} {values}");
-    plt.tight_layout()
+    # Fixed margins rather than tight_layout, which would size the plate
+    # differently with and without colourbar tick labels.
+    fig.subplots_adjust(left=0.04, right=0.95, bottom=0.1, top=0.92, wspace=0.02)
     if outdir is not None:
         if not os.path.exists(outdir):
             os.makedirs(outdir)
@@ -403,11 +445,11 @@ def draw_plate_heatmap(barcode='OTPARP1234-Eco1', df=None, wells='Well', values=
 ###############################################################################
 # SECTION 3: HiTS database reads
 #
-# Every query here is an f-string, i.e. string-interpolated rather than
-# parameterised (lookup_lot_by_user is the one exception). That is tolerable
-# because inputs come from the lab's own barcodes, but it means a barcode
-# containing a quote will produce a syntax error at best. If this file is ever
-# pointed at untrusted input, parameterise first.
+# Every query here is a SQLAlchemy text() with bound parameters (:name, and
+# bindparam(..., expanding=True) for IN lists). Never build SQL by putting
+# values into the string with f-strings, % or +, even for barcodes or IDs
+# from the lab's own files: a quote in a value breaks the query, and this
+# code is public. Keep new queries parameterised the same way.
 ###############################################################################
 def make_platemaps_from_barcode(barcode='OTPARP1234-Eco1', outdir='./', cnx=None):
     """
@@ -452,6 +494,9 @@ def make_platemaps_from_barcode(barcode='OTPARP1234-Eco1', outdir='./', cnx=None
     df = pd.read_sql(query, cnx, params={'barcode': barcode})
     if close:
         cnx.dispose()
+    if df.empty:
+        raise ValueError(f"Source plate {barcode!r} has no wells in HiTS. Check the barcode in the "
+                         f"Info tab's Source_plate column. {SOURCE_PLATE_HELP}")
 
     # The INV_ALIAS join fans each well out to one row per alias type. Collapse
     # back to one row per well: prefer the Common_Name alias, else keep an
@@ -518,7 +563,7 @@ def make_platemaps_from_barcode(barcode='OTPARP1234-Eco1', outdir='./', cnx=None
 #   lookup_plate_by_lot_num              - you know the compound and its lot
 #   lookup_lot_by_user                   - last resort: newest lot this person made
 ###############################################################################
-def lookup_lot_by_user(ids=['285699', '130958'], users=[("Amanda", "Paulson")]):
+def lookup_lot_by_user(ids, users):
     """ Find the most recent (highest) lotnum that the user has created for their compound.
 
     Last-resort fallback: use only when nothing else identifies the lot, since
@@ -527,12 +572,18 @@ def lookup_lot_by_user(ids=['285699', '130958'], users=[("Amanda", "Paulson")]):
 
     Args:
         ids (list of strings): The list of SMDC IDs to look up. Integers, but in string form.
-        users (list of string tuples): The list of users in the form ("FirstName","LastName")
+        users (list of string tuples): The list of users in the form ("FirstName","LastName").
+            Required: there is no default person.
     Returns:
         fullresults (DataFrame): the SMDC IDs and Lots as two columns in a df.
             One block of rows per user, concatenated; if two users both made
             lots of the same compound you get duplicate SMDC_IDs.
     """
+    if not users:
+        raise ValueError(
+            "Some compounds have no lot, and the last-resort lookup (newest lot registered by a person) "
+            "needs to know who registered them. Pass users=[(\"First\", \"Last\")] (USERS in the notebook), "
+            "or give those wells a lot or source plate in the plate map.")
     # pull data from hits
     cnx = _connect()
     res = []
@@ -873,11 +924,28 @@ def _row_labels(n):
     return (letters + ['A' + x for x in letters])[:n]
 
 
+def _infer_platemap_size(plate_map):
+    """ 96, 384 or 1536 from the row labels in a plate map sheet's first column.
+
+    The largest label present decides: AF only exists on 1536, P on 384 and
+    up, H on 96 and up. Falls back to 384, which then fails with
+    MissingBlockError if the sheet has no complete A-P block.
+    """
+    labels = set(plate_map.iloc[:, 0].dropna().astype(str).str.strip().str.upper())
+    if 'AF' in labels:
+        return 1536
+    if 'P' in labels:
+        return 384
+    if 'H' in labels:
+        return 96
+    return 384
+
+
 class MissingBlockError(ValueError):
     """The plate map sheet has fewer complete blocks than the one asked for."""
 
 
-def read_platemap_block(plate_map=None, block=0, value_name='SMDC_ID', size=384):
+def read_platemap_block(plate_map=None, block=0, value_name='SMDC_ID', size=None):
     """ Read one grid block out of a block-formatted plate map sheet.
 
     THE BLOCK CONVENTION (this is the thing to understand about the workbook):
@@ -900,7 +968,8 @@ def read_platemap_block(plate_map=None, block=0, value_name='SMDC_ID', size=384)
         plate_map (DataFrame): sheet read with header=None-ish semantics; the
             first column holds row letters, the rest hold values.
         block (int): which block, 0 at the top.
-        size (int): 96, 384 or 1536.
+        size (int, optional): 96, 384 or 1536. Default None: infer it from the
+            row labels (AF means 1536, else P means 384, else H means 96).
     Returns:
         df (DataFrame): long-format block data with columns row, col, value_name.
             col is a zero-padded 2-char string so `row + col` reconstructs the
@@ -909,6 +978,8 @@ def read_platemap_block(plate_map=None, block=0, value_name='SMDC_ID', size=384)
     NOTE: `plate_rows` is rebound here as an int, shadowing the module-level
     list of row labels.
     """
+    if size is None:
+        size = _infer_platemap_size(plate_map)
     if size == 384:
         plate_cols = 24
         plate_rows = 16
@@ -1156,6 +1227,44 @@ def resolve_share_path(path, share_root=None):
     return os.path.join(share_root or default_share_root(), _normalize_share_path(p))
 
 
+def share_path(path, share_root=None, what='path'):
+    """resolve_share_path, then check the result exists.
+
+    For notebook settings: a wrong path or an unmounted share fails here,
+    with both the typed and the mapped path, instead of several cells later.
+    Args:
+        path (str): a path as typed or copied (Z:\\..., /Volumes/Shared/..., /mnt/z/...).
+        share_root (str, optional): where the share is mounted. Default: default_share_root().
+        what (str): the setting's name, for the message (e.g. 'INFILE').
+    Returns:
+        str: the path on this machine.
+    """
+    resolved = resolve_share_path(path, share_root)
+    if not os.path.exists(resolved):
+        mapped = f" (looked for {resolved!r})" if resolved != str(path) else ""
+        raise FileNotFoundError(f"{what} not found: {str(path)!r}{mapped}. Check the path for typos. "
+                                f"If the share is mounted somewhere else: {SHARE_ROOT_HELP}")
+    return resolved
+
+
+
+class _FileInUse:
+    """with _FileInUse(path): ... turns a PermissionError while writing path
+    into one that says to close the file in Excel (or wherever it is open)."""
+    def __init__(self, path):
+        self.path = path
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, kind, err, tb):
+        if kind is not None and issubclass(kind, PermissionError):
+            raise PermissionError(
+                f"Can't write {self.path}: it is open in another program (Excel, a text editor, Pipeline Pilot) "
+                "or you don't have write permission there. Close it everywhere else and run this cell again."
+            ) from err
+        return False
+
 
 def _copy_file(src, dst):
     """Copy a file's contents, then its timestamps if the filesystem allows it.
@@ -1165,7 +1274,8 @@ def _copy_file(src, dst):
     setting the modification time is refused. Keep the copy and log a
     warning instead of stopping the run.
     """
-    shutil.copyfile(src, dst)
+    with _FileInUse(dst):
+        shutil.copyfile(src, dst)
     try:
         shutil.copystat(src, dst)
     except OSError as e:
@@ -1181,7 +1291,10 @@ def _copy_tree(src, dst, ignore=None):
     the end if that is refused, which a WSL network mount does. Directory
     timestamps don't matter here, so they aren't copied.
     """
-    for root, dirs, files in os.walk(src):
+    def fail(err):  # an unreadable folder must stop the copy, not be skipped
+        raise err
+
+    for root, dirs, files in os.walk(src, onerror=fail):
         skip = set(ignore(root, dirs + files)) if ignore else set()
         dirs[:] = [d for d in dirs if d not in skip]
         target = os.path.join(dst, os.path.relpath(root, src))
@@ -1189,6 +1302,23 @@ def _copy_tree(src, dst, ignore=None):
         for name in files:
             if name not in skip:
                 _copy_file(os.path.join(root, name), os.path.join(target, name))
+
+
+def _missing_from_copy(src, dst, ignore=None):
+    """Files under src (minus ignored ones) that are absent from dst or differ
+    in size there. Empty means dst holds a full copy."""
+    missing = []
+    for root, dirs, files in os.walk(src, onerror=lambda err: missing.append(str(err))):
+        skip = set(ignore(root, dirs + files)) if ignore else set()
+        dirs[:] = [d for d in dirs if d not in skip]
+        for name in files:
+            if name in skip:
+                continue
+            a = os.path.join(root, name)
+            b = os.path.join(dst, os.path.relpath(a, src))
+            if not os.path.isfile(b) or os.path.getsize(a) != os.path.getsize(b):
+                missing.append(a)
+    return missing
 
 
 def _read_info_sheet(infile):
@@ -1213,10 +1343,16 @@ def _read_info_sheet(infile):
             dp['Info'] = pd.read_csv(infile)
         except Exception:
             dp['Sheet1'] = pd.read_csv(infile)
-    try:
-        info = dp['Info']
-    except KeyError:
-        info = dp['Sheet1']
+    info_sheet = 'Info' if 'Info' in dp else 'Sheet1'
+    info = dp[info_sheet]
+    # pandas reads cells like 'NA' and 'n/a' as empty. In Source_plate those
+    # mean "no source plate", so keep that column as typed (only truly empty
+    # cells become NaN). Same shape and index as `info`.
+    if 'xlsx' in infile:
+        raw = pd.read_excel(infile, engine='openpyxl', sheet_name=info_sheet,
+                            keep_default_na=False, na_values=[''])
+    else:
+        raw = pd.read_csv(infile, keep_default_na=False, na_values=[''])
 
     info = _standardize_info_columns(info)
     # Some workbooks carry a title row above the real header.
@@ -1224,6 +1360,9 @@ def _read_info_sheet(infile):
         info.columns = info.iloc[0]
         info = info.drop(index=0)
         info = _standardize_info_columns(info)
+    if 'Source_plate' in info.columns and raw.shape == dp[info_sheet].shape:
+        pos = list(info.columns).index('Source_plate')
+        info['Source_plate'] = raw.iloc[:, pos].reindex(info.index).values
 
     info = info.dropna(how='all', axis='index').reset_index(drop=True)
     info = info.dropna(subset='Date_of_screen', how='all', axis='index').reset_index(drop=True)
@@ -1236,10 +1375,183 @@ def _read_info_sheet(infile):
     return dp, info
 
 
-SOURCE_PLATE_HELP = ("Fill in Source_plate for every plate in the Info tab: one or more source plate "
-                     "barcodes separated by ';', 'use lots' (lots drawn in block 2), 'use map' (source "
-                     "plate barcodes drawn in block 2), 'use biomek' (a Biomek worklist tab), or "
-                     "'n.a.' (no source plate).")
+SOURCE_PLATE_HELP = (
+    'Fill in Source_plate for every plate in the Info tab. Accepted values (type them exactly, '
+    'case does not matter):\n'
+    '  "use lots"   lots are drawn in block 2 (bare "lots" or "lot" also works)\n'
+    '  "use map"    source plate barcodes are drawn in block 2 (bare "map" also works)\n'
+    '  "use biomek" lots come from a Biomek worklist tab (bare "biomek" also works)\n'
+    '  "use my name" (or "use users", "NA", "n/a", "n.a.", "n.a", "none")   no source plate; '
+    'each compound gets the newest lot registered by USERS; source plate and well are written as NA\n'
+    '  one or more source plate barcodes separated by ";", e.g. "PLATE1-MA01; PLATE2-MA01"')
+
+
+NO_SOURCE_PLATE_WORDS = {'na', 'n/a', 'n.a', 'n.a.', 'none',
+                         # same rule, said as "look the lot up by my name"
+                         'use my name', 'use users', 'use user', 'use name', 'my name', 'users'}
+
+
+OLD_SCREEN_DAYS = 92   # about 3 months
+
+_ENVISION_STARTED = re.compile(r'^\s*Assay Started:\s*,+\s*([^,]+)', re.IGNORECASE)
+
+
+def envision_run_date(path):
+    """The date an EnVision export says the assay ran ('Assay Started:'), or
+    None if the file isn't an EnVision CSV or has no readable date."""
+    if not str(path).lower().endswith('.csv') or not os.path.isfile(path):
+        return None
+    try:
+        with open(path, newline='', errors='replace') as f:
+            for line in f:
+                m = _ENVISION_STARTED.match(line)
+                if m:
+                    value = m.group(1).strip()
+                    for fmt in ('%m/%d/%Y %I:%M:%S %p', '%m/%d/%Y %H:%M:%S', '%m/%d/%Y'):
+                        try:
+                            return pd.Timestamp(datetime.datetime.strptime(value, fmt)).normalize()
+                        except ValueError:
+                            pass
+                    stamp = pd.to_datetime(value, errors='coerce')
+                    return None if pd.isna(stamp) else stamp.normalize()
+    except OSError:
+        return None
+    return None
+
+
+def check_screen_dates(info, max_age_days=OLD_SCREEN_DAYS, today=None, share_root=None):
+    """Warn about Date_of_screen values that look wrong.
+
+    For each Info row whose Raw_data_file is an EnVision CSV with an
+    'Assay Started:' date, Date_of_screen is compared with that date and any
+    difference is flagged. Rows without one (other instruments, file not
+    found) fall back to the age rule: more than ~3 months old, or in the
+    future, is flagged and the operator is asked whether it is historical
+    data or a wrong date. Warnings only, so historical data still goes
+    through.
+
+    Args:
+        info (DataFrame): the parsed Info sheet (Date_of_screen as YYYYMMDD ints).
+        max_age_days (int): the fallback age limit. Default about 3 months.
+        today (date, optional): for tests. Default: today.
+        share_root (str, optional): where the share is mounted, to find
+            Raw_data_file. Default: default_share_root(); if the share
+            can't be found, every row uses the age rule.
+    Returns:
+        DataFrame: the flagged rows with a 'reason' column (empty if none).
+    """
+    cols = ['Raw_assay_ID', 'Assay_name', 'Date_of_screen', 'Grid_num', 'reason']
+    if 'Date_of_screen' not in info.columns:
+        return pd.DataFrame(columns=cols)
+    today = pd.Timestamp(today or pd.Timestamp.today().normalize())
+    dates = pd.to_datetime(info['Date_of_screen'].astype(str), format='%Y%m%d', errors='coerce')
+
+    def run_date(raw):
+        if not isinstance(raw, str) or not raw.strip():
+            return None
+        try:
+            root = share_root or default_share_root()
+            path = raw if os.path.exists(raw) else os.path.join(root, _normalize_share_path(raw))
+        except (FileNotFoundError, ValueError):
+            path = raw
+        return envision_run_date(path)
+
+    raw_col = info['Raw_data_file'] if 'Raw_data_file' in info.columns else pd.Series(None, index=info.index)
+    reasons = []
+    for date, raw in zip(dates, raw_col):
+        ran = run_date(raw)
+        if pd.isna(date):
+            reasons.append('unreadable Date_of_screen')
+        elif ran is not None:
+            reasons.append('' if ran == date else f'the EnVision file says it ran {ran:%Y-%m-%d}')
+        elif (today - date).days < 0:
+            reasons.append('in the future')
+        elif (today - date).days > max_age_days:
+            reasons.append(f'{(today - date).days} days old')
+        else:
+            reasons.append('')
+    flagged = info.assign(_date=dates, reason=reasons)[[r != '' for r in reasons]]
+    if flagged.empty:
+        return pd.DataFrame(columns=cols)
+    keys = [c for c in ('Raw_assay_ID', 'Assay_name', '_date', 'reason') if c in flagged.columns]
+    plates = flagged['Grid_num'].astype(str) if 'Grid_num' in flagged.columns else pd.Series('?', index=flagged.index)
+    versions = flagged.assign(_plates=plates).groupby(keys, dropna=False)['_plates'].agg(', '.join).reset_index()
+    lines = [f"  assay {v.get('Raw_assay_ID', '?')} {v.get('Assay_name', '')}: Date_of_screen "
+             f"{v._date:%Y-%m-%d} - {v.reason}; plates {v._plates}" if not pd.isna(v._date) else
+             f"  assay {v.get('Raw_assay_ID', '?')} {v.get('Assay_name', '')}: {v.reason}; plates {v._plates}"
+             for _, v in versions.iterrows()]
+    logger.warning(
+        f"Check Date_of_screen for {len(versions)} assay version(s):\n" + '\n'.join(lines) +
+        f"\nWhere the EnVision file has a different date, the Info tab is probably wrong. Otherwise, dates over "
+        f"{max_age_days} days old are fine for historical data; if this isn't historical, fix the date "
+        "(often the year) and rerun step 2.")
+    have = [c for c in cols if c in flagged.columns]
+    return flagged[have].reset_index(drop=True)
+
+
+def check_destination_plates(info, cnx=None):
+    """Warn when a destination plate (Grid_num) is listed twice in the Info
+    tab, or already exists in HiTS inventory as an IP_BARCODE or IP_GRID_NUM.
+
+    Uploading creates the destination plate in inventory, so an existing one
+    usually means the barcode was reused or an earlier upload of it got part
+    way. It's a warning, not an error: a deliberate rerun is fine.
+
+    Returns:
+        dict: {'duplicated': [grid_nums listed more than once],
+               'in_hits': DataFrame of matching INV_PLATE rows}.
+    """
+    grids = [str(g).strip() for g in info.get('Grid_num', pd.Series(dtype=str)).dropna()]
+    grids = [g for part in grids for g in part.split(';') if g.strip()]
+    grids = [g.strip() for g in grids]
+    dup = sorted({g for g in grids if grids.count(g) > 1})
+    if dup:
+        logger.warning(f"Destination plate(s) listed more than once in the Info tab: {', '.join(dup)}. "
+                       "Each Grid_num must be a different plate.")
+    in_hits = pd.DataFrame(columns=['IP_BARCODE', 'IP_GRID_NUM', 'IP_INS_DATE'])
+    if grids:
+        close = cnx is None
+        cnx = cnx or _connect()
+        try:
+            query = text("select IP_BARCODE, IP_GRID_NUM, IP_INS_DATE from INV_PLATE "
+                         "where IP_BARCODE in :g or IP_GRID_NUM in :g").bindparams(
+                bindparam('g', expanding=True))
+            in_hits = pd.read_sql(query, cnx, params={'g': sorted(set(grids))})
+        finally:
+            if close:
+                cnx.dispose()
+        if len(in_hits):
+            rows = '\n'.join(f"  {r.IP_BARCODE} (grid_num {r.IP_GRID_NUM}, added {r.IP_INS_DATE})"
+                             for r in in_hits.itertuples())
+            logger.warning(f"{len(in_hits)} destination plate(s) already exist in HiTS inventory ({READ_DB}):\n"
+                           f"{rows}\nIs this a rerun of an earlier upload? If not, the barcode is already "
+                           "taken: give the plate a new Grid_num.")
+    return {'duplicated': dup, 'in_hits': in_hits}
+
+
+def _source_plate_mode(value):
+    """Which Source_plate rule a cell selects.
+
+    Returns 'blank', 'na', 'biomek', 'lot', 'map' or 'barcodes'. Keywords only
+    count when the cell starts with 'use ' or is the bare word ('lots',
+    'map', ...), so a real barcode that happens to contain 'MAP' or 'lot' is
+    still read as a barcode. 'NA', 'n/a', 'n.a.' and 'none' mean no source
+    plate.
+    """
+    v = _safe_lower(value).strip()
+    if v in ('', 'nan'):
+        return 'blank'
+    if v in NO_SOURCE_PLATE_WORDS or v.startswith('n.a.'):
+        return 'na'
+    if v.startswith('use ') or v in ('lot', 'lots', 'map', 'biomek'):
+        if 'biomek' in v:
+            return 'biomek'
+        if 'lot' in v:
+            return 'lot'
+        if 'map' in v:
+            return 'map'
+        raise ValueError(f"Unknown Source_plate keyword {value!r}. {SOURCE_PLATE_HELP}")
+    return 'barcodes'
 
 
 def _blank_source_plate_message(grid_nums):
@@ -1252,7 +1564,8 @@ def _check_source_plates(info):
         values = info['Source_plate']
     else:  # the column was empty in every row, so _read_info_sheet dropped it
         values = pd.Series([np.nan] * len(info), index=info.index)
-    blank = values.isna() | (values.astype(str).str.strip().isin(['', 'nan']))
+    modes = values.map(_source_plate_mode)  # also rejects unknown 'use ...' keywords up front
+    blank = modes == 'blank'
     if blank.any():
         raise ValueError(_blank_source_plate_message(info.loc[blank, 'Grid_num'].astype(str).tolist()))
 
@@ -1353,7 +1666,7 @@ def make_dr_platemaps(dp, row, users, basedir=None, replace_dict=None, control_d
             replace_dict[str(label)] = np.nan
             replace_dict[str(label).strip()] = np.nan
     replace_dict, replace_vals = _build_replace_metadata(replace_dict)
-    print(replace_dict)
+    logger.info(f"Labels replaced in block 0: {replace_dict}")
 
     # Open one connection and thread it through the lookups. A missing
     # credential raises here, next to its cause, instead of failing later.
@@ -1366,7 +1679,7 @@ def make_dr_platemaps(dp, row, users, basedir=None, replace_dict=None, control_d
     # Two shapes of input. Biomek worklists are already long format and already
     # name their source wells, so they skip block parsing entirely and only need
     # lots looked up. Everything else is a hand-drawn block grid.
-    if ('biomek' in source_plate_val):
+    if _source_plate_mode(source_plate_val) == "biomek":
         logger.info("Source plate is long format")
         dids = dp[grid_num[0:31]].copy()  # [0:31]: Excel truncates sheet names
         dids = _standardize_dids_columns(dids)
@@ -1414,6 +1727,7 @@ def make_dr_platemaps(dp, row, users, basedir=None, replace_dict=None, control_d
     # count above means the count sees the full plate, so the warning stays
     # meaningful instead of firing on every plate with empty wells.
     dids = handle_zero_concentrations(dids)
+    dids = _round_concentrations(dids)
 
     # HiTS wants the literal string 'NA' for empty fields, not blanks or NaN.
     dids = dids.fillna('NA').replace("-", "NA").replace('water', 'NA').replace('Water', 'NA')
@@ -1423,18 +1737,21 @@ def make_dr_platemaps(dp, row, users, basedir=None, replace_dict=None, control_d
 def get_source_plate_info(row, dids, maps, cnx, replace_vals):
     """ Resolve Source plate / Source well for every destination well.
 
-    THE Source_plate CELL IS A DISPATCH LANGUAGE. Accepted values, matched as
-    case-insensitive substrings:
+    THE Source_plate CELL IS A DISPATCH LANGUAGE (see _source_plate_mode).
+    Keywords count only as 'use ...' or the bare word, so a barcode that
+    contains 'MAP' or 'lot' is still a barcode. Case-insensitive:
 
-        'n.a.'          no source plate exists (compounds added by hand).
-                        Source plate/well are literally 'NA'.
-        'lot'           lots are drawn in block 2 of the map; plates are then
+        'NA', 'n/a', 'n.a.', 'none'
+                        no source plate exists (compounds added by hand).
+                        Source plate/well are literally 'NA'; lots come from
+                        the newest lot registered by `users`.
+        'use lots'      lots are drawn in block 2 of the map; plates are then
                         looked up from (SMDC_ID, Lot).
-        ''              an error. Blank used to mean 'use lots', which hid a
-                        forgotten Source_plate until much later.
-        'map'           source plate barcodes are drawn in block 2 of the map,
+        'use map'       source plate barcodes are drawn in block 2 of the map,
                         i.e. wells came from different plates.
-        'biomek'        handled upstream in make_dr_platemaps, not here.
+        'use biomek'    handled upstream in make_dr_platemaps, not here.
+        blank           an error. Blank used to mean 'use lots', which hid a
+                        forgotten Source_plate until much later.
         anything else   treated as one or more literal barcodes, separated by
                         ';' and/or newlines. Every listed plate is pulled from
                         HiTS and joined on SMDC_ID, so a compound present on
@@ -1457,15 +1774,16 @@ def get_source_plate_info(row, dids, maps, cnx, replace_vals):
     dids = _standardize_dids_columns(dids)
     source_plate_raw = _series_get_ci(row, 'Source_plate', '')
     source_plate_val = _safe_lower(source_plate_raw)
+    mode = _source_plate_mode(source_plate_raw)
 
-    if 'n.a.' in source_plate_val:
+    if mode == 'na':
         logger.info("Source plate is N.A.")
         dids['Source plate'] = 'NA'
         dids['Source well'] = 'NA'
-    elif source_plate_val == '':
+    elif mode == 'blank':
         raise ValueError(_blank_source_plate_message(
             [str(_series_get_ci(row, 'Grid_num', '?'))]))
-    elif 'lot' in source_plate_val:
+    elif mode == 'lot':
         logger.info("Will get source plate info from lot lookup")
         try:
             lots = read_platemap_block(plate_map=maps, block=2, value_name='Lot')
@@ -1487,7 +1805,7 @@ def get_source_plate_info(row, dids, maps, cnx, replace_vals):
             lots['Destination well'] = lots.row + lots.col
             dids = dids.merge(lots[['Destination well', 'Lot']], how='left')
         source_plates = []
-    elif 'map' in source_plate_val:
+    elif mode == 'map':
         logger.info("Source plate is map")
         sps = read_platemap_block(plate_map=maps, block=2, value_name='Source plate')
         sps['Destination well'] = sps.row + sps.col
@@ -1549,7 +1867,7 @@ def get_source_plate_info(row, dids, maps, cnx, replace_vals):
                     replace_vals=replace_vals
                 )
                 dids = dids.merge(plates, how='left')
-            except DBAPIError:
+            except (DBAPIError, ConnectionError):
                 raise  # a database/connection error must stop the run, not become 'NA'
             except Exception as e:
                 logger.warning(f"Error looking up plates by lot num: {e}")
@@ -1603,7 +1921,7 @@ def get_lot_info(row, dids, maps, users, replace_vals):
     lot_info_val = _safe_lower(_series_get_ci(row, 'Lot_info', ''))
 
     if 'Lot' in dids.columns and dids.Lot.isna().any() and maps is not None and (
-            lot_info_val == 'use map' or ('map' in source_plate_val and 'biomek' not in source_plate_val)):
+            lot_info_val == 'use map' or _source_plate_mode(source_plate_val) == 'map'):
         # Some wells were pinned with '12346-1' in block 0; fill the rest from
         # stage 2 as if nothing had been pinned. Pinned lots always win.
         logger.info("Some lots pinned in block 0; filling the rest from the map settings")
@@ -1619,13 +1937,13 @@ def get_lot_info(row, dids, maps, users, replace_vals):
             aids = read_platemap_block(plate_map=maps, block=2, value_name='Lot')
             aids['Destination well'] = aids.row + aids.col
             dids = dids.merge(aids[['Destination well', 'Lot']], how='left')
-        elif 'map' in source_plate_val:
+        elif _source_plate_mode(source_plate_val) == 'map':
             logger.info("Lot info from plate map")
             ids, plates = _id_plate_pairs(dids)
             lots = lookup_lot_by_plate_and_ic_id(ids=ids, plates=plates, replace_vals=replace_vals, matched=True)
             lots.SMDC_ID = lots.SMDC_ID.astype(float)
             dids = dids.merge(lots, how='left')
-        elif 'biomek' in source_plate_val:
+        elif _source_plate_mode(source_plate_val) == 'biomek':
             logger.info("Lot info from source plate and well")
             lots = lookup_id_and_lot_by_plate_and_well(plates=dids['Source plate'].tolist(),
                                                        wells=dids['Source well'].tolist())
@@ -1665,8 +1983,13 @@ def get_lot_info(row, dids, maps, users, replace_vals):
     # Stage 4: last resort, assume the newest lot this user registered.
     missing_mask = (~dids.SMDC_ID.isna()) & ((dids.Lot.isna()) | (dids.Lot == ''))
     if len(dids[missing_mask]) > 0:
-        logger.info('Getting lot info from user')
         ids = dids[missing_mask].SMDC_ID.astype(int).astype(str).unique().tolist()
+        # Expected with 'NA' / 'use my name'; anywhere else it's a guess the operator should check.
+        level = (logging.INFO if _source_plate_mode(_series_get_ci(row, 'Source_plate', '')) == 'na'
+                 else logging.WARNING)
+        logger.log(level, f"Getting lot info from user for {len(ids)} compound(s) on "
+                          f"{_series_get_ci(row, 'Grid_num', '')}: the newest lot registered by USERS. "
+                          "Check those wells.")
         lot_map = _unique_user_lots(lookup_lot_by_user(ids=ids, users=users))
         mask = dids["SMDC_ID"].notna() & dids["Lot"].isna()
         dids.loc[mask, "Lot"] = dids.loc[mask, "SMDC_ID"].map(lot_map)
@@ -1850,6 +2173,30 @@ def get_destination_plate_info(dp, row, replace_dict, control_dict=None):
     return _standardize_dids_columns(dids), maps
 
 
+CONC_SIG_FIGS = 10
+
+
+def _round_concentrations(dids, sig_figs=CONC_SIG_FIGS):
+    """Round '[compound] uM' to sig_figs significant figures.
+
+    The same dilution often reaches the map in two forms: a formula result
+    (83.33333333333333) in some cells and a typed or pasted value
+    (83.3333333333333) in others. They print the same but are different
+    numbers, so Pipeline Pilot's 'Insert Conc Variable' sees two values for
+    one concentration and fails with "Cannot insert multiple values for
+    HLD_VALUE". Ten significant figures is far beyond any real dilution.
+    """
+    col = '[compound] uM'
+    if col not in dids.columns:
+        return dids
+    conc = pd.to_numeric(dids[col], errors='coerce')
+    ok = conc.notna() & np.isfinite(conc) & (conc != 0)
+    if ok.any():
+        dids = dids.copy()
+        dids.loc[ok, col] = conc[ok].map(lambda v: float(f'{v:.{sig_figs}g}'))
+    return dids
+
+
 def handle_zero_concentrations(dids):
     """Drop zero-concentration wells, treating them as empty wells.
 
@@ -1882,7 +2229,17 @@ def handle_zero_concentrations(dids):
     if conc_col not in dids.columns:
         return dids
 
-    zero_mask = dids[conc_col] == 0
+    # Control wells (Sci_PosControl / Sci_NegControl) hold no compound, so they
+    # have no concentration: blank it (written as NA), whatever the map says,
+    # and keep the well, or the control flags never reach the manifest.
+    controls = pd.Series(False, index=dids.index)
+    for flag in ('Sci_PosControl', 'Sci_NegControl'):
+        if flag in dids.columns:
+            controls |= dids[flag].fillna(False).astype(bool)
+    if controls.any():
+        dids = dids.copy()
+        dids.loc[controls, conc_col] = np.nan
+    zero_mask = (dids[conc_col] == 0) & ~controls
     n_zero = int(zero_mask.sum())
     if n_zero == 0:
         return dids
@@ -1897,7 +2254,7 @@ def handle_zero_concentrations(dids):
 
 
 ###############################################################################
-def make_dr_platemaps_and_folders(infile='', users=[("Amanda", "Paulson")], basedir='./', dose_response=True,
+def make_dr_platemaps_and_folders(infile='', users=None, basedir='./', dose_response=True,
                                   replace_dict=None, control_dict=None, share_root=None):
     """
     Create an excel file with dose response plate information for DR assay upload
@@ -1906,7 +2263,9 @@ def make_dr_platemaps_and_folders(infile='', users=[("Amanda", "Paulson")], base
     with additional data including source plate barcodes, assay IDs and dates.
     Args:
         infile (str): Path to the input file containing plate information.
-        users (list of tuples): List of user names in the form of (FirstName, LastName).
+        users (list of tuples): List of user names in the form of (FirstName, LastName),
+            used only for the last-resort lot lookup. No default: if that lookup is
+            needed and users is empty, the run stops with a ValueError.
         basedir (str): Place to move data to and create folders in.
         dose_response (bool): Whether to create dose response platemaps. If
             False, folders are still created and raw data still copied; only
@@ -1946,9 +2305,13 @@ def make_dr_platemaps_and_folders(infile='', users=[("Amanda", "Paulson")], base
     infile = resolve_share_path(infile, share_root)
     basedir = resolve_share_path(basedir, share_root)
     dp, info = _read_info_sheet(infile)
+    check_screen_dates(info, share_root=share_root)
     if dose_response:
         _check_source_plates(info)  # fail now, not after folders are made and files copied
+    check_destination_plates(info)
     load_folders = []
+    dr_plates = []  # (grid_num, path) of every *_DR_plate.xlsx written, for check_dr_plates
+    raw_files = []  # raw instrument files copied into the toload folders, for tidying
 
     # One instrument file may back several plates, so group by file.
     for df, rpt in _iter_load_groups(info):
@@ -1981,7 +2344,10 @@ def make_dr_platemaps_and_folders(infile='', users=[("Amanda", "Paulson")], base
                     # Apply scientist-control flags LAST, after all plate/lot/source logic.
                     dids = _apply_control_flags_from_map(dids, dp, plate_row, control_dict)
 
-                    dids.to_excel(os.path.join(outdir, f'{grid_num}_DR_plate.xlsx'), index=False)
+                    dr_path = os.path.join(outdir, f'{grid_num}_DR_plate.xlsx')
+                    with _FileInUse(dr_path):
+                        dids.to_excel(dr_path, index=False)
+                    dr_plates.append((grid_num, dr_path))
                 row.Grid_num = ';'.join(gridnum.grid_num)
 
             # create or modify grid_num.txt: the manifest the HiTS loader reads
@@ -2005,13 +2371,79 @@ def make_dr_platemaps_and_folders(infile='', users=[("Amanda", "Paulson")], base
             # _copy_file rather than os.system("cp ..."): no shell quoting to
             # get wrong, and a failed copy raises instead of scrolling past.
             # It keeps mtime where the mount allows, which matters for provenance.
+            if not os.path.exists(origfile):
+                raise FileNotFoundError(
+                    f"Raw_data_file for {row.Grid_num} not found: {origfile!r}. Check the Info tab's "
+                    f"Raw_data_file path. If the share is mounted somewhere else: {SHARE_ROOT_HELP}")
             _copy_file(origfile, outfile)
+            if outfile not in raw_files:
+                raw_files.append(outfile)
+            _warn_if_envision_blocks_out_of_order(outfile)
             elapsed = time.time() - starttime
             logger.info(f'Done copying in {humanize.precisedelta(elapsed, minimum_unit="seconds", format="%d")}')
     # The toload_<i>/<date> folders this run wrote to, so later steps (the
     # EnVision check) look only at them and not at older assays in basedir.
     info.attrs['load_folders'] = load_folders
+    info.attrs['dr_plates'] = dr_plates
+    info.attrs['raw_files'] = raw_files
+    info.attrs['infile'] = infile
+    if dr_plates:
+        check_dr_concentrations(info)
     return info
+
+
+def check_dr_concentrations(info, rel_tol=1e-3):
+    """Warn about concentrations that look like the same dilution written two ways.
+
+    Pipeline Pilot's DR upload stores one concentration row per assay and
+    value ("Insert Conc Variable"), shared by every plate and compound in that
+    assay, after rounding IW_FINAL_CONC_NM to the nearest 0.001 nM (1 fM):
+    SUBST_CONC_UM := Floor(IW_FINAL_CONC_NM * 1000 + 0.5) / 1000000.
+    Values equal at 1 fM merge cleanly. Values that still differ at 1 fM but
+    by less than rel_tol (0.1%) are almost certainly one dilution typed two
+    ways (e.g. 83.3333 and 83.33333), and would be stored as two separate
+    concentrations. Real dilution steps differ by far more than 0.1%.
+
+    Reads the DR files make_dr_platemaps_and_folders wrote, grouped by Assay ID.
+
+    Returns:
+        DataFrame, one row per suspicious pair: Assay ID, the two values in
+        uM, and the plates and wells holding each. Empty = nothing to fix.
+    """
+    dr_plates = info.attrs.get('dr_plates') or []
+    frames = []
+    for grid_num, path in dr_plates:
+        d = pd.read_excel(path)
+        if '[compound] uM' not in d:
+            continue
+        d['[compound] uM'] = pd.to_numeric(d['[compound] uM'], errors='coerce')
+        d = d[d['[compound] uM'].notna() & (d['[compound] uM'] > 0)]
+        frames.append(d.assign(**{'Destination plate': grid_num}))
+    cols = ['Assay ID', 'conc 1 uM', 'conc 2 uM', 'wells with conc 1', 'wells with conc 2']
+    if not frames:
+        return pd.DataFrame(columns=cols)
+    d = pd.concat(frames, ignore_index=True)
+    if 'Assay ID' not in d:
+        d['Assay ID'] = 'NA'
+    d['fM'] = np.floor(d['[compound] uM'] * 1e9 + 0.5).astype('int64')   # what PP stores, in fM
+    rows = []
+    for assay, g in d.groupby('Assay ID'):
+        levels = sorted(g.fM.unique())
+        for a, b in zip(levels, levels[1:]):
+            if (b - a) / a < rel_tol:
+                def where(v):
+                    w = g[g.fM == v]
+                    return ', '.join(f"{p} {x}" for p, x in zip(w['Destination plate'], w['Destination well']))
+                rows.append({'Assay ID': assay, 'conc 1 uM': a / 1e9, 'conc 2 uM': b / 1e9,
+                             'wells with conc 1': where(a), 'wells with conc 2': where(b)})
+    out = pd.DataFrame(rows, columns=cols)
+    if len(out):
+        logger.warning(f"{len(out)} pair(s) of concentrations differ by less than {rel_tol:.1%} but are not equal "
+                       "to 1 fM, so Pipeline Pilot would store them as separate concentrations. They are probably "
+                       "one dilution typed two ways: make them identical in the plate map and run step 2 again.\n"
+                       + '\n'.join(f"  assay {r['Assay ID']}: {r['conc 1 uM']:.12g} vs {r['conc 2 uM']:.12g} uM "
+                                   f"({r['wells with conc 1']} / {r['wells with conc 2']})" for _, r in out.iterrows()))
+    return out
 
 
 def load_folders(info):
@@ -2028,6 +2460,161 @@ def load_folders(info):
         raise ValueError("info has no record of its load folders. Pass the DataFrame that "
                          "make_dr_platemaps_and_folders returned, not a copy or a re-read Info sheet.")
     return list(folders)
+
+
+def _warn_if_envision_blocks_out_of_order(path):
+    """Warn if a copied raw CSV's blocks aren't laid out as Plate information,
+    Background information, then results with row A on line 12 of each block
+    (raw_data_parsers._block_layout_problems). Best fixed by re-exporting from
+    EnVision; otherwise the tidy step re-arranges the copy. Other problems
+    (hand-pasted values, reads that differ) are reported by the tidy step.
+    Non-CSV files and files with no 'Plate information' section are skipped."""
+    if not str(path).lower().endswith('.csv'):
+        return []
+    try:
+        with open(path, newline='') as f:
+            text = f.read()
+        if 'Plate information' not in text:
+            return []
+        try:
+            from raw_data_parsers import _block_layout_problems, _envision_ncols, plate_dict
+        except ImportError:
+            return []
+        import csv
+        nrows = {v[2] + 1: v[1] for v in plate_dict.values()}.get(_envision_ncols(path), 16)
+        lines = list(csv.reader(text.splitlines()))
+        problems = [p for p in _block_layout_problems(lines, nrows)
+                    if 'block starting here' in p or 'before any Plate information' in p]
+    except Exception as e:
+        logger.warning(f"Could not check the block order of {path}: {e}")
+        return []
+    if problems:
+        logger.warning(f"{path}: the EnVision export is ordered wrong (each block should be Plate information, "
+                       f"Background information, then the results, with row A on line 12). Ideally re-export it "
+                       f"from EnVision with Plate and Background information placed before the results. If you "
+                       f"can't, the tidy step re-arranges this copy.\n  " + '\n  '.join(problems[:5]))
+    return problems
+
+
+def raw_files(info):
+    """The raw instrument files make_dr_platemaps_and_folders copied into
+    the toload folders (one per Raw_data_file), in the order it copied them."""
+    files = info.attrs.get('raw_files')
+    if files is None:
+        raise ValueError("info has no record of its raw files. Pass the DataFrame that "
+                         "make_dr_platemaps_and_folders returned, not a copy or a re-read Info sheet.")
+    return list(files)
+
+
+def _draw_dr_layout(grid_num, dr):
+    """Draw a DR file as a plate: SMDC ID in compound wells, POS / NEG in
+    control wells, coloured by well type (compound, positive, negative)."""
+    from matplotlib.colors import ListedColormap
+    d = dr[['Destination well', 'SMDC_ID']].copy()
+    pos = dr['Sci_PosControl'].astype(bool) if 'Sci_PosControl' in dr else False
+    neg = dr['Sci_NegControl'].astype(bool) if 'Sci_NegControl' in dr else False
+    ids = pd.to_numeric(d.SMDC_ID, errors='coerce')
+    d['layout: compound / POS / NEG'] = np.where(pos, 2.0, np.where(neg, 3.0, np.where(ids.notna(), 1.0, np.nan)))
+    d['label'] = np.where(pos, 'POS', np.where(neg, 'NEG', ids.map(lambda v: '' if pd.isna(v) else str(int(v)))))
+    d['label'] = d['label'].replace('', np.nan)
+    draw_plate_heatmap(barcode=grid_num, df=d, wells='Destination well',
+                       values='layout: compound / POS / NEG', labels='label', plate_size=384, vmin=1, vmax=3, cbar=False,
+                       cmap=ListedColormap(['#cfe3f5', '#9be3a3', '#f5a3a3']))
+
+
+_ID_CELL = re.compile(r'^\s*(\d+)(?:\.0+)?(?:\s*-\s*\d+)?\s*$')
+
+
+def _expected_smdc_id(cell):
+    """The SMDC ID a block-0 cell asks for: 12346, 12346.0 and 12346-1 all give
+    12346. Anything else (blank, a control or solvent label) gives NaN."""
+    m = _ID_CELL.match(str(cell)) if pd.notna(cell) else None
+    return float(m.group(1)) if m else np.nan
+
+
+def _plates_to_draw(draw, n_plates):
+    """How many plates check_dr_plates draws: an int, 'all', or True (= all)."""
+    if draw is True or (isinstance(draw, str) and draw.strip().lower() == 'all'):
+        return n_plates
+    if draw is None or draw is False:
+        return 0
+    try:
+        n = int(draw)
+    except (TypeError, ValueError):
+        raise ValueError(f"draw must be a number of plates or 'all', not {draw!r}") from None
+    if n < 0:
+        raise ValueError(f"draw must be 0 or more, not {n}")
+    return min(n, n_plates)
+
+
+def check_dr_plates(info, draw=1):
+    """Check each *_DR_plate.xlsx step 2 wrote against the user's input map.
+
+    For every destination plate, the SMDC ID in each well of the DR file is
+    compared with block 0 of that plate's tab in the input workbook. Numbers
+    and ID-lot cells like 12346-1 are compounds; text cells (controls, DMSO,
+    anything in REPLACE_DICT) are expected to be empty in the DR file.
+
+    Args:
+        info (DataFrame): what make_dr_platemaps_and_folders returned.
+        draw (int or 'all'): how many DR files to draw (layout with controls,
+            plus concentrations), to compare by eye with the input tab.
+            1 (default) draws the first plate, 'all' draws every plate,
+            0 or None draws none. True means 'all'.
+    Returns:
+        (summary, mismatches): summary has one row per plate (compound wells
+        in the input, compound wells in the DR file, mismatched wells, wells
+        with no Lot, no source plate or no concentration). mismatches lists
+        every well where the two disagree. Both empty of problems = file matches.
+    """
+    dr_plates = info.attrs.get('dr_plates')
+    infile = info.attrs.get('infile')
+    if dr_plates is None or infile is None:
+        raise ValueError("info has no record of its DR plate files. Pass the DataFrame that "
+                         "make_dr_platemaps_and_folders returned (with dose_response=True).")
+    n_draw = _plates_to_draw(draw, len(dr_plates))
+    dp, _ = _read_info_sheet(infile)
+    rows, bad = [], []
+    for i, (grid_num, path) in enumerate(dr_plates):
+        dr = pd.read_excel(path)
+        want = read_platemap_block(plate_map=dp[grid_num[0:31]], block=0, value_name='Input')
+        want['Destination well'] = want.row + want.col
+        want['Expected'] = want.Input.map(_expected_smdc_id)
+        got = dr.groupby('Destination well', as_index=False).SMDC_ID.first()
+        both = want[['Destination well', 'Input', 'Expected']].merge(got, how='outer')
+        differs = ~((both.Expected == both.SMDC_ID) | (both.Expected.isna() & both.SMDC_ID.isna()))
+        mism = both[differs].assign(**{'Destination plate': grid_num})
+        bad.append(mism[['Destination plate', 'Destination well', 'Input', 'Expected', 'SMDC_ID']])
+        compounds = dr[dr.SMDC_ID.notna()]
+        rows.append({
+            'Destination plate': grid_num,
+            'compound wells (input)': int(both.Expected.notna().sum()),
+            'compound wells (DR file)': int(compounds['Destination well'].nunique()),
+            'mismatched wells': int(differs.sum()),
+            'no Lot': int(compounds.Lot.isna().sum()) if 'Lot' in dr else len(compounds),
+            'no source plate': (int(compounds['Source plate'].isna().sum())
+                                if 'Source plate' in dr else len(compounds)),
+            'no conc': (int(compounds['[compound] uM'].isna().sum())
+                        if '[compound] uM' in dr else len(compounds)),
+            'positive control wells': int(dr['Sci_PosControl'].astype(bool).sum()) if 'Sci_PosControl' in dr else 0,
+            'negative control wells': int(dr['Sci_NegControl'].astype(bool).sum()) if 'Sci_NegControl' in dr else 0,
+            'file': path,
+        })
+        if i < n_draw:
+            _draw_dr_layout(grid_num, dr)
+            if '[compound] uM' in dr and dr['[compound] uM'].notna().any():
+                draw_plate_heatmap(barcode=grid_num, df=dr, wells='Destination well',
+                                   values='[compound] uM', labels='[compound] uM', plate_size=384)
+    if 0 < n_draw < len(dr_plates):
+        logger.warning(f"Drew {n_draw} of {len(dr_plates)} DR plates. Use draw='all' to draw every plate.")
+    summary = pd.DataFrame(rows)
+    mismatches = pd.concat(bad, ignore_index=True) if bad else pd.DataFrame()
+    n = int(summary['mismatched wells'].sum()) if len(summary) else 0
+    if n:
+        logger.warning(f"{n} well(s) in the DR plate files don't match the input map. See mismatches.")
+    else:
+        logger.info(f"All {len(summary)} DR plate file(s) match the input map.")
+    return summary, mismatches
 
 
 # ###############################################################################
@@ -2079,25 +2666,45 @@ def clean_up_folders(infile=None, basedir='./', delete_orig=False, share_root=No
             + "\n  ".join(conflicts[:20])
         )
 
-    # delete original file from all_data or similar folder
-    if delete_orig:
-        for rdf in info.Raw_data_file.unique():
-            # Same path normalisation the pipeline used to find the file.
-            rdf = os.path.join(share_root or default_share_root(), _normalize_share_path(rdf))
-            logger.info(rdf)
-            if os.path.exists(rdf):
-                # os.remove rather than os.system("rm ..."): no shell involved,
-                # so spaces and quotes in the path cannot make this delete
-                # something else.
-                os.remove(rdf)
-
     # move each date from toload to loaded folders. Copy then remove, rather
     # than shutil.move, so an interrupted run leaves the source intact.
     for oldpath, newpath in moves:
         logger.info(f'{oldpath} -> {newpath}')
         os.makedirs(os.path.dirname(newpath), exist_ok=True)
         _copy_tree(oldpath, newpath, ignore=ignore_files)
-        shutil.rmtree(oldpath, ignore_errors=True)
+        missing = _missing_from_copy(oldpath, newpath, ignore=ignore_files)
+        if missing:
+            raise OSError(f"Copy of {oldpath} to {newpath} is incomplete, so nothing was removed from "
+                          "toload and no original was deleted. Missing or different: " + ", ".join(missing[:10]))
+        shutil.rmtree(oldpath)  # raises on failure; the full copy is already in loaded/
+
+    # Delete the originals only after every move above has finished, and only
+    # when this original's own copy is in loaded/ (the same assay folder, date
+    # and file name the pipeline copied it to). Any failure above raises
+    # before this point, so the originals stay put. Contents aren't compared:
+    # the tidy step may have edited the toload copy on purpose.
+    if delete_orig:
+        root = share_root or default_share_root()
+        copies = {}
+        for df, _rpt in _iter_load_groups(info):  # the rows the pipeline built folders from
+            for _, r in df.iterrows():
+                rel = _normalize_share_path(r.Raw_data_file)
+                copies.setdefault(rel, set()).add(os.path.join(
+                    basedir, _assay_dir_name(r.Raw_assay_ID, r.Assay_name),
+                    'loaded', str(int(float(r.Date_of_screen))), rel.rsplit('/', 1)[-1]))
+        for rel, expected in copies.items():
+            # Same path normalisation the pipeline used to find the file.
+            rdf = os.path.join(root, rel)
+            if not os.path.exists(rdf):
+                continue
+            if not any(os.path.isfile(c) for c in expected):
+                logger.warning(f"Not deleting {rdf}: its copy isn't in loaded/ (looked for {sorted(expected)})")
+                continue
+            logger.info(f"deleting original {rdf}")
+            # os.remove rather than os.system("rm ..."): no shell involved,
+            # so spaces and quotes in the path cannot make this delete
+            # something else.
+            os.remove(rdf)
 
 
 CONTROL_COLUMNS = {'sciposcontrol': 'Sci_PosControl', 'scinegcontrol': 'Sci_NegControl'}
@@ -2145,7 +2752,7 @@ def _apply_control_flags_from_map(dids, dp, row, control_dict):
     """
     if not control_dict:
         return dids
-    if 'biomek' in _safe_lower(_series_get_ci(row, 'Source_plate', '')):
+    if _source_plate_mode(_series_get_ci(row, 'Source_plate', '')) == 'biomek':
         logger.info(f"{row.Grid_num}: Biomek worklist, no plate-map annotations to read for controls")
         return dids
     dids = dids.copy()
@@ -2240,7 +2847,8 @@ def _append_grid_num(outdir, gridnum):
     else:
         gn = gridnum
     gn['grid_num'] = [str(x)[0:50] for x in gn['grid_num']]  # HiTS barcode field caps at 50
-    gn.to_csv(path, index=False)
+    with _FileInUse(path):
+        gn.to_csv(path, index=False)
     return gn
 
 
@@ -2392,7 +3000,8 @@ def remove_duplicate_source_plates(dups, keep=None, write=False):
         changes[plate] = (before, len(t))
         logger.info(f"{plate}: {before} -> {len(t)} rows")
         if write:
-            t.to_excel(plate, index=False)
+            with _FileInUse(plate):
+                t.to_excel(plate, index=False)
     if not write:
         logger.info("Dry run: pass write=True to save.")
     return changes
@@ -2420,7 +3029,8 @@ def fill_control_lots(outdir, assay_ids, control_lots, write=False):
         paths.append(path)
         logger.info(path)
         if write:
-            t.to_excel(path, index=False)
+            with _FileInUse(path):
+                t.to_excel(path, index=False)
     if not write:
         logger.info("Dry run: pass write=True to save.")
     return paths
@@ -2437,8 +3047,10 @@ def source_plate_barcodes(info):
     if 'Source_plate' not in info.columns:
         return out
     for v in info['Source_plate'].dropna().astype(str):
-        for b in v.split(';'):
+        if _source_plate_mode(v) != 'barcodes':
+            continue
+        for b in v.replace('\n', ';').split(';'):
             b = b.strip()
-            if b and not b.lower().startswith(('use ', 'n.a')) and b not in out:
+            if b and b not in out:
                 out.append(b)
     return out
