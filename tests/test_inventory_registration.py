@@ -185,7 +185,7 @@ def test_copy_daughter_plates():
     assert out["IP_INS_DATE"].notna().all()
 
 
-def test_copy_daughter_wells_overrides_only_lot_bearing():
+def test_copy_daughter_wells_copies_only_lot_bearing():
     source = pd.DataFrame(
         {
             "IW_ID": [1, 2, 3],
@@ -200,13 +200,11 @@ def test_copy_daughter_wells_overrides_only_lot_bearing():
         source, new_ip_id_map={1001: 5001}, vol_ul=5, conc_um=10000, ins_by=569
     )
     assert "IW_ID" not in out.columns
-    assert out["IW_SOURCE_ID"].tolist() == [1, 2, 3]
+    # The empty parent well (IW_ID 2, no IW_ICL_ID) is not copied at all.
+    assert out["IW_SOURCE_ID"].tolist() == [1, 3]
     assert out["IW_IP_ID"].eq(5001).all()
-    # Only lot-bearing wells (rows 0 and 2) get vol/conc.
-    assert out.loc[[0, 2], "IW_VOL_UL"].eq(5).all()
-    assert out.loc[[0, 2], "IW_CONC_UM"].eq(10000).all()
-    assert pd.isna(out.loc[1, "IW_VOL_UL"])
-    assert pd.isna(out.loc[1, "IW_CONC_UM"])
+    assert out["IW_VOL_UL"].eq(5).all()
+    assert out["IW_CONC_UM"].eq(10000).all()
 
 
 def test_copy_daughter_wells_raises_on_unmapped_plate():
@@ -327,32 +325,40 @@ def test_prepare_inventory_frames_barcode_suffix_key():
     }
 
 
-def test_prepare_inventory_frames_iw_barcode_defaults_to_plate_barcode():
-    src = pd.DataFrame(
-        {
-            "Plate": ["P1", "P1", "P2"],
-            "Well": ["A01", "A02", "A01"],
-        }
-    )
-    _, wells = ir.prepare_inventory_frames(
+def _prepare(src, **well_inputs):
+    return ir.prepare_inventory_frames(
         src,
-        plate_inputs={
-            "IP_GRID_NUM": "Plate",
-            "IP_BARCODE_SUFFIX": "-x",
-            "IP_ICO_ID": 1,
-            "IP_COLLECTION": "c",
-        },
-        well_inputs={"IW_COORDINATES": "Well", "IW_BARCODE": None},  # None -> use IP_BARCODE
+        plate_inputs={"IP_GRID_NUM": "Plate", "IP_BARCODE_SUFFIX": "-x", "IP_ICO_ID": 1, "IP_COLLECTION": "c"},
+        well_inputs={"IW_COORDINATES": "Well", **well_inputs},
         size=96,
         require_plate_ids=False,
         fill_missing=True,
     )
-    # every well (incl. padded) carries its plate's IP_BARCODE
-    real = wells[wells["IW_COORDINATES"].isin(["A01", "A02"])]
-    assert dict(zip(real["Plate"], real["IW_BARCODE"])).get("P1") == "P1-x"
-    assert set(wells.loc[wells["Plate"] == "P2", "IW_BARCODE"]) == {"P2-x"}
-    # padded wells for P1 also get the plate barcode
-    assert (wells.loc[wells["Plate"] == "P1", "IW_BARCODE"] == "P1-x").all()
+
+
+def test_prepare_inventory_frames_never_copies_ip_barcode_to_wells():
+    # IW_BARCODE is a scanned tube barcode; with none scanned, every well is empty.
+    src = pd.DataFrame({"Plate": ["P1", "P1", "P2"], "Well": ["A01", "A02", "A01"]})
+    plates, wells = _prepare(src, IW_BARCODE=None)
+    assert set(plates["IP_BARCODE"]) == {"P1-x", "P2-x"}
+    assert wells["IW_BARCODE"].isna().all()
+    plates, wells = _prepare(src)
+    assert wells["IW_BARCODE"].isna().all()
+
+
+def test_prepare_inventory_frames_uses_scanned_iw_barcode_column():
+    src = pd.DataFrame({"Plate": ["P1", "P1"], "Well": ["A01", "A02"], "IW_BARCODE": ["T001", "T002"]})
+    _, wells = _prepare(src)
+    real = wells.set_index("IW_COORDINATES").loc[["A01", "A02"], "IW_BARCODE"]
+    assert real.tolist() == ["T001", "T002"]
+    padded = wells[~wells["IW_COORDINATES"].isin(["A01", "A02"])]
+    assert len(padded) == 94 and padded["IW_BARCODE"].isna().all()
+
+
+def test_copy_daughter_wells_does_not_carry_tube_barcodes():
+    source = pd.DataFrame({"IW_ID": [1], "IW_IP_ID": [1001], "IW_ICL_ID": [111], "IW_BARCODE": ["T001"]})
+    out = ir.copy_daughter_wells(source, new_ip_id_map={1001: 5001})
+    assert out["IW_BARCODE"].isna().all()
 
 
 def _collection_engine():
@@ -497,3 +503,54 @@ def test_load_layout_map_strips_bom():
     m = ir.load_layout_map(MAP_DIR / "map_96_to_384_interleaved.csv")
     assert "source_well" in m.columns
     assert "﻿source_well" not in m.columns
+
+
+def test_prepare_inventory_frames_drops_empty_wells_and_does_not_pad():
+    src = pd.DataFrame({"Plate": ["P1", "P1", "P1"], "Well": ["A01", "A02", "A03"], "IW_ICL_ID": [11, None, 13]})
+    plates, wells = ir.prepare_inventory_frames(
+        src,
+        plate_inputs={"IP_GRID_NUM": "Plate", "IP_ICO_ID": 1, "IP_COLLECTION": "c"},
+        well_inputs={"IW_COORDINATES": "Well"},
+        size=96,
+        require_plate_ids=False,
+    )
+    assert len(plates) == 1
+    assert wells["IW_COORDINATES"].tolist() == ["A01", "A03"]
+
+
+@pytest.mark.parametrize("profile, src_size, dest_size", [("interleave", 96, 384), ("quadrant", 384, 1536)])
+def test_remap_then_stage_drops_empty_and_control_wells(profile, src_size, dest_size):
+    # End to end: remap 4 parents, then stage the daughter wells. Wells with no
+    # lot (empty, or DMSO-only controls) must not reach the daughter plate, and
+    # every lot-bearing well must land exactly once with its own IW_ICL_ID.
+    parents = ["P1", "P2", "P3", "P4"]
+    mothers = _mother_wells(parents, src_size)
+    mothers["IW_BARCODE"] = "T" + mothers["IW_ID"].astype(str)        # scanned tubes
+    empty = mothers["IW_COORDINATES"].isin(["A01", "B02", "H12"])      # controls / empty
+    mothers.loc[empty, "IW_ICL_ID"] = np.nan
+    remapped = ir.remap_wells_by_quadrant(
+        mothers, dest_size=dest_size, destination_plate_names=["D1"], source_plate_col="IP_GRID_NUM",
+        profile=profile, source_plate_order=parents, plates_per_destination=4)
+    dest = pd.DataFrame({"IP_GRID_NUM": ["D1"], "IP_ID": [5001], "IP_BARCODE": ["D1-AC01"]})
+    out = ir.stage_remapped_wells(
+        remapped, destination_plate_ids=dest, parent_to_daughter={i: 5001 for i in range(1001, 1005)})
+    kept = remapped[remapped["IW_ICL_ID"].notna()]
+    assert len(kept) < len(remapped) and len(out) == len(kept)
+    assert out["IW_ICL_ID"].notna().all()
+    assert sorted(out["IW_ICL_ID"]) == sorted(kept["IW_ICL_ID"])
+    assert out["IW_COORDINATES"].is_unique
+    assert out["IW_IP_ID"].eq(5001).all()
+    assert out["IW_BARCODE"].isna().all()                              # tubes don't carry over
+
+
+def test_stage_remapped_wells_does_not_need_destination_barcode():
+    # Daughter barcodes are no longer read here, so IP_GRID_NUM + IP_ID is enough.
+    parents = ["P1", "P2", "P3", "P4"]
+    remapped = ir.remap_wells_by_quadrant(
+        _mother_wells(parents, 96), dest_size=384, destination_plate_names=["D1"],
+        source_plate_col="IP_GRID_NUM", profile="interleave", source_plate_order=parents,
+        plates_per_destination=4)
+    dest = pd.DataFrame({"IP_GRID_NUM": ["D1"], "IP_ID": [5001]})
+    out = ir.stage_remapped_wells(
+        remapped, destination_plate_ids=dest, parent_to_daughter={i: 5001 for i in range(1001, 1005)})
+    assert len(out) == remapped["IW_ICL_ID"].notna().sum() and out["IW_IP_ID"].eq(5001).all()
