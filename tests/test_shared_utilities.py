@@ -25,7 +25,7 @@ class MySQLConfigurationTests(unittest.TestCase):
 
 class XevoTests(unittest.TestCase):
     def test_real_report_and_sample_archive(self):
-        report = Path(__file__).parent / "data/masslynx_example_input.rpt"
+        report = Path(__file__).resolve().parent.parent / "data/masslynx_example_input.rpt"
         with tempfile.TemporaryDirectory() as d:
             normal = raw_data_parsers.extract_rpt_data(str(report), outdir=d)
             self.assertEqual(len(normal), 28)
@@ -42,7 +42,7 @@ class XevoTests(unittest.TestCase):
     def _two_spectrum_report(self, d, first_procdesc):
         """Copy the example report, giving sample 1 an extra spectrum before the real one,
         the way newer Xevo reports do."""
-        lines = (Path(__file__).parent / "data/masslynx_example_input.rpt").read_bytes().splitlines(keepends=True)
+        lines = (Path(__file__).resolve().parent.parent / "data/masslynx_example_input.rpt").read_bytes().splitlines(keepends=True)
         start = next(i for i, l in enumerate(lines) if l.startswith(b"[SPECTRUM]"))
         mass = next(i for i in range(start, len(lines)) if lines[i].startswith(b";Mass"))
         end = next(i for i in range(mass, len(lines)) if lines[i].lstrip().startswith(b"}"))
@@ -74,7 +74,7 @@ class XevoTests(unittest.TestCase):
             self.assertEqual(df.iloc[0]["intensitymax"], 11036179)
             with tempfile.TemporaryDirectory() as d2:
                 plain = raw_data_parsers.extract_rpt_data(
-                    str(Path(__file__).parent / "data/masslynx_example_input.rpt"), outdir=d2)
+                    str(Path(__file__).resolve().parent.parent / "data/masslynx_example_input.rpt"), outdir=d2)
                 self.assertEqual(df.iloc[0]["linenum_start"], plain.iloc[0]["linenum_start"] + n_extra)
                 self.assertEqual((Path(d) / "samples/Sample_001_data.txt").read_bytes(),
                                  (Path(d2) / "samples/Sample_001_data.txt").read_bytes())

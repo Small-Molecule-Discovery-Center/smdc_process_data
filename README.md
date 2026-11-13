@@ -17,14 +17,25 @@ A set of functions to preprocess various kinds of raw data for upload or further
 [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Small-Molecule-Discovery-Center/smdc_process_data/blob/main/Plot_LCMS_Spectra.ipynb)
 
 #### database_interactions
-Notebooks for querying the database, making plate maps and entering new data
+Notebooks and modules for querying HiTS, making plate maps and entering new data.
+After `uv sync` or `pip install -e .` (see below), import these from any folder with
+`from database_interactions import plate_maps, check_grid_num`. From inside this folder the flat
+`import plate_maps` also works.
 
-**Registering plates and wells (incl. daughter plates):** use `safe_register.py`.
-It connects to the test database `QB3_HiTS_nightly` unless you name `QB3_HiTS`,
-does a dry run (insert, report, roll back) unless you pass `save=True`, and puts
-plates and wells in together so a failure leaves nothing half-saved. The reshaping
-helpers it uses live in `inventory_registration.py`. Run the tests with
-`pytest database_interactions/`.
+- **`prepare_hits_upload.ipynb`**: the operator notebook for a HiTS data upload. It follows
+  Part C and E of the data upload SOP: build the `toload` folders, run the EnVision barcode /
+  plate-order check, fix duplicate source plates, spot-check, and clean up after upload.
+- **`plate_maps.py`**: builds plate-map workbooks from HiTS and the `toload` folders. It only
+  reads from HiTS (production `QB3_HiTS` unless `hits_db` is set). Raw data is read from
+  the Montreal share, found automatically at `/Volumes/Shared/` (Mac) or `Z:` /
+  `/mnt/z/` (Windows/WSL). For another drive, pass `share_root=` or set `smdc_share_root`.
+- **`check_grid_num.py`**: checks each `grid_num.txt` against the plates and barcodes in the
+  EnVision export. Also runs on the command line: `python check_grid_num.py ROOT -o report.csv`.
+- **`safe_register.py`**: register plates and wells (including daughter plates). It connects to
+  the test database `QB3_HiTS_nightly` unless you name `QB3_HiTS`, does a dry run (insert,
+  report, roll back) unless you pass `save=True`, and saves plates and wells together, so a
+  failure leaves nothing half-saved. The reshaping helpers it uses are in
+  `inventory_registration.py`.
 
 #### preprocess_data
 Before uploading data to the HiTS db, reorganize or prepare for instrument use
@@ -36,7 +47,7 @@ Analyses to replace pipeline pilot functionality
 After exporting data from HiTs, further analysis for hit selection and assay comparisons
 
 #### data_viz
-Functions for drawing plate maps, DR curves, etc.
+Functions for drawing DR curves, etc. (plate map drawing moved to `database_interactions/plate_maps.py`)
 
 #### other_analyses
 Random useful requested analyses
@@ -58,12 +69,19 @@ tables, which also act as a fallback if the database read fails. Run the tests w
 
 ### Install shared utilities
 
-From this checkout, run `python -m pip install -e .` (or
-`python -m pip install -e '.[tethering]'` for plotting dependencies).
+From this checkout, run `uv sync`, which builds `.venv` with this repo, everything the plate
+maps, upload notebook and `plot_curves` import, and JupyterLab. Without uv, run
+`python -m pip install -e .` (add `pip install jupyterlab` if you need it). The extras add the
+optional pieces: `'.[upload]'` adds `rapidfuzz` for fuzzy barcode matching in the EnVision
+check, and `'.[tethering]'` adds Pillow for the tethering plots.
 This is the canonical source of the `smdc-data-proc` distribution, formerly
 installed from data-proc. Reinstall from here in each consuming environment.
-Imports remain `import raw_data_parsers`, `import mysql_cnx`, and
-`from process_data import tethering_analysis`.
+The install name `smdc-data-proc` is not an import name. Imports are `import raw_data_parsers`,
+`import mysql_cnx`, `from process_data import tethering_analysis` and
+`from database_interactions import plate_maps` (also `check_grid_num`, `inventory_registration`,
+`safe_register`). Installing into another environment (for example a separate Notebooks venv)
+works the same way: activate it, then run `uv pip install -e <path to this repo>`. Rerun that after
+`pyproject.toml` changes, and restart the Jupyter kernel.
 
 `raw_data_parsers.extract_rpt_data(infile, samples_only=False, outdir="./")`
 extracts Xevo sample metadata and writes spectra to `outdir/samples`.
@@ -76,3 +94,7 @@ The database defaults to `hits_db` or `QB3_HiTS`. Environment variables are
 read when creating an engine, so importing the module needs no credentials.
 Tethering analysis still uses the separate data-proc plate_maps/plot_curves
 helpers for database analysis and plotting.
+
+### Tests
+
+All tests live in `tests/`. Run them from the repo root with `pytest`.
