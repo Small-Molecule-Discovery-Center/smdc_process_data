@@ -23,9 +23,8 @@ upload = ["humanize", "matplotlib", "seaborn", "openpyxl", "scipy", "rapidfuzz"]
 #   from data_viz import plot_curves
 #   import raw_data_parsers, mysql_cnx
 #   from process_data import tethering_analysis
-#   import smdc_paths  (legacy shim for flat names like `import plate_maps`)
 packages = ["process_data", "database_interactions", "data_viz"]
-py-modules = ["raw_data_parsers", "mysql_cnx", "smdc_paths"]
+py-modules = ["raw_data_parsers", "mysql_cnx"]
 
 [tool.setuptools.package-data]
 database_interactions = ["*.csv"]

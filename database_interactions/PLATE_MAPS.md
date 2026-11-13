@@ -59,8 +59,7 @@ From a checkout of this repo: `python -m pip install -e '.[upload]'`.
 ### Import
 
 ```python
-import smdc_paths   # only needed outside database_interactions/
-from plate_maps import (
+from database_interactions.plate_maps import (
     make_dr_platemaps_and_folders,
     make_platemaps_from_barcode,
     draw_plate_heatmap,
@@ -421,8 +420,9 @@ functions are not written to be testable; see the `TODO: decompose further` on
 ## Troubleshooting
 
 **`ModuleNotFoundError: No module named 'plate_maps'` (or `mysql_cnx`)**
-Run `pip install -e '.[upload]'` from this repo, and add `import smdc_paths`
-before the import when the notebook is outside `database_interactions/`.
+Run `pip install -e '.[upload]'` from this repo into the environment the kernel
+uses, restart the kernel, and import with `from database_interactions import plate_maps`
+(the flat `import plate_maps` no longer works).
 
 **`ConnectionError: Cannot reach HiTS ...`**
 The SSH tunnel is down, or the `mysql_*` variables are wrong. Reopen the tunnel
