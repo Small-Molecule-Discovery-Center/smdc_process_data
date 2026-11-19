@@ -424,6 +424,13 @@ Run `pip install -e '.[upload]'` from this repo into the environment the kernel
 uses, restart the kernel, and import with `from database_interactions import plate_maps`
 (the flat `import plate_maps` no longer works).
 
+**`clean_up_folders` warns "couldn't finish removing ... toload", or a `toload_0/<date>` folder is left with a red badge in Finder**
+A file in it is still open, usually a raw CSV you hand-edited in Excel. The Montreal share can't delete an open
+file. `loaded/` already has the full copy (checked before anything is removed). Close the file in Excel and any
+Finder windows inside the folder, then run the clean-up cell again, or delete the leftover by hand. Entries in
+`toload_<n>` that can't be opened, or files saved there outside a date folder, are skipped with a warning and never
+deleted.
+
 **`ConnectionError: Cannot reach HiTS ...`**
 The SSH tunnel is down, or the `mysql_*` variables are wrong. Reopen the tunnel
 and rerun.

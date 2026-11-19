@@ -692,3 +692,55 @@ def test_check_dr_concentrations_catches_pasted_7_decimals(tmp_path):
     info = pd.DataFrame()
     info.attrs['dr_plates'] = paths
     assert len(pm.check_dr_concentrations(info)) == 1
+
+
+def _listing_with_ghost(monkeypatch, ghost):
+    """os.listdir that also reports `ghost`, a name the share lists but can't open
+    (a folder deleted earlier that macOS still shows with a red badge)."""
+    real = os.listdir
+
+    def listdir(path):
+        names = real(path)
+        return names + [ghost] if os.path.basename(str(path)) == 'toload_0' else names
+    monkeypatch.setattr(pm.os, 'listdir', listdir)
+
+
+def test_clean_up_skips_a_listed_folder_it_cannot_open(tmp_path, monkeypatch, caplog):
+    assay = _batch(tmp_path, 'grid_num\nP1\n')
+    monkeypatch.setattr(pm, '_read_info_sheet', lambda infile: (None, _info()))
+    _listing_with_ghost(monkeypatch, '20260611')
+    with caplog.at_level('WARNING'):
+        pm.clean_up_folders('info.xlsx', basedir=str(tmp_path))       # used to raise FileNotFoundError
+    assert (assay / 'loaded' / '20260101' / 'grid_num.txt').exists()   # the real folder still moved
+    assert not (assay / 'toload_0' / '20260101').exists()
+    assert '20260611' in caplog.text and "can't be opened" in caplog.text
+
+
+def test_clean_up_leaves_a_loose_file_in_toload_alone(tmp_path, monkeypatch, caplog):
+    assay = _batch(tmp_path, 'grid_num\nP1\n')
+    (assay / 'toload_0' / 'x_edited.csv').write_text('edit')            # saved beside the date folder, not in it
+    monkeypatch.setattr(pm, '_read_info_sheet', lambda infile: (None, _info()))
+    with caplog.at_level('WARNING'):
+        pm.clean_up_folders('info.xlsx', basedir=str(tmp_path))
+    assert (assay / 'toload_0' / 'x_edited.csv').read_text() == 'edit'  # untouched, not deleted
+    assert (assay / 'loaded' / '20260101' / 'grid_num.txt').exists()
+    assert 'x_edited.csv' in caplog.text and 'not a date folder' in caplog.text
+
+
+def test_clean_up_warns_and_carries_on_when_toload_cannot_be_fully_removed(tmp_path, monkeypatch, caplog):
+    # A CSV still open in Excel can't be deleted on the share: rmtree fails after the copy.
+    share, assay = _batch_with_original(tmp_path, monkeypatch)
+
+    def stuck(path, *a, **k):
+        raise FileNotFoundError(2, 'No such file or directory', str(path))
+    monkeypatch.setattr(pm.shutil, 'rmtree', stuck)
+    with caplog.at_level('WARNING'):
+        pm.clean_up_folders('info.xlsx', basedir=str(tmp_path / 'out'), delete_orig=True, share_root=str(share))
+    assert (assay / 'loaded' / '20260101' / 'x.csv').read_text() == 'tidied copy'    # copy is safe
+    assert 'Close those files in Excel' in caplog.text and 'x.csv' in caplog.text
+    assert not (share / 'x.csv').exists()                                             # original still handled
+    monkeypatch.undo()                                                                  # Excel closed: rerun finishes
+    monkeypatch.setattr(pm, '_read_info_sheet', lambda infile: (None, _info()))
+    pm.clean_up_folders('info.xlsx', basedir=str(tmp_path / 'out'))
+    assert not (assay / 'toload_0' / '20260101').exists()
+    assert (assay / 'loaded' / '20260101' / 'x.csv').read_text() == 'tidied copy'

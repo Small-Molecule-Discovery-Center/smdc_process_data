@@ -2679,14 +2679,23 @@ def clean_up_folders(infile=None, basedir='./', delete_orig=False, share_root=No
         if missing:
             raise OSError(f"Copy of {oldpath} to {newpath} is incomplete, so nothing was removed from "
                           "toload and no original was deleted. Missing or different: " + ", ".join(missing[:10]))
-        shutil.rmtree(oldpath)  # raises on failure; the full copy is already in loaded/
-        if os.path.exists(oldpath):
-            # On an SMB share the server can accept the delete but keep the folder
-            # ("delete pending", shown in Finder with a red no-entry badge) while
-            # another program, e.g. Pipeline Pilot or a Finder window, has it open.
-            # It goes away once that program lets go of it.
-            logger.warning(f"{oldpath} is empty but still listed on the share. Close anything "
-                           "that has it open (Pipeline Pilot, Finder windows); it should then disappear.")
+        try:
+            shutil.rmtree(oldpath)
+        except OSError as e:
+            # The full copy is already in loaded/ (checked above), so nothing is lost. On the
+            # Montreal share a file another program has open (typically a CSV still open in
+            # Excel after a hand edit) can't be deleted: the folder stays half there and Finder
+            # draws a red badge. Say so, keep going, and a rerun finishes the job (copying the
+            # same files again is allowed).
+            left = _leftovers(oldpath)
+            logger.warning(f"Copied to {newpath}, but couldn't finish removing {oldpath} ({e}). "
+                           f"Still there: {left or 'the folder itself'}. Close those files in Excel "
+                           "(and any Finder windows open inside the folder), then run this cell again, "
+                           "or delete the leftover by hand. loaded/ already has the copy.")
+        else:
+            if os.path.exists(oldpath):
+                logger.warning(f"{oldpath} was deleted but the share still lists it: close anything "
+                               "that has it open (Excel, Pipeline Pilot, Finder windows) and it will disappear.")
 
     # Delete the originals only after every move above has finished, and only
     # when this original's own copy is in loaded/ (the same assay folder, date
@@ -2862,6 +2871,25 @@ def _append_grid_num(outdir, gridnum):
     return gn
 
 
+def _leftovers(path):
+    """Names still inside path, or [] if it can't be listed."""
+    try:
+        return sorted(os.listdir(path))
+    except OSError:
+        return []
+
+
+def _is_openable_dir(path):
+    """True if path is a folder we can list. os.path.isdir alone isn't enough on
+    an SMB share: a folder deleted while another program had it open stays
+    listed, and listing it fails with FileNotFoundError."""
+    try:
+        with os.scandir(path):
+            return True
+    except OSError:
+        return False
+
+
 def _plan_loaded_moves(info, basedir):
     """ (toload_<i>/<datadir>, loaded/<datadir>) pairs for clean_up_folders. """
     moves = []
@@ -2879,7 +2907,18 @@ def _plan_loaded_moves(info, basedir):
                 # skip macOS metadata that is not a real directory
                 if datadir == ".DS_Store" or datadir.startswith('._'):
                     continue
-                pair = (os.path.join(toload, datadir), os.path.join(loaded, datadir))
+                path = os.path.join(toload, datadir)
+                if not _is_openable_dir(path):
+                    # Never copy or delete something we can't read. Leave it where it is.
+                    if os.path.isfile(path):
+                        why = "a file, not a date folder (put it inside the date folder to have it moved)"
+                    else:
+                        why = ("listed but can't be opened. This is usually a folder that was already "
+                               "deleted that the share still shows (Finder draws a red badge on it); it "
+                               "goes away once nothing has it open")
+                    logger.warning(f"Skipping {path}: {why}. Nothing was moved or deleted for it.")
+                    continue
+                pair = (path, os.path.join(loaded, datadir))
                 if pair not in moves:
                     moves.append(pair)
     return moves
