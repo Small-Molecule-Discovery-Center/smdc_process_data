@@ -692,3 +692,112 @@ def test_check_dr_concentrations_catches_pasted_7_decimals(tmp_path):
     info = pd.DataFrame()
     info.attrs['dr_plates'] = paths
     assert len(pm.check_dr_concentrations(info)) == 1
+
+
+def _listing_with_ghost(monkeypatch, ghost):
+    """os.listdir that also reports `ghost`, a name the share lists but can't open
+    (a folder deleted earlier that macOS still shows with a red badge)."""
+    real = os.listdir
+
+    def listdir(path):
+        names = real(path)
+        return names + [ghost] if os.path.basename(str(path)) == 'toload_0' else names
+    monkeypatch.setattr(pm.os, 'listdir', listdir)
+
+
+def test_clean_up_skips_a_listed_folder_it_cannot_open(tmp_path, monkeypatch, caplog):
+    assay = _batch(tmp_path, 'grid_num\nP1\n')
+    monkeypatch.setattr(pm, '_read_info_sheet', lambda infile: (None, _info()))
+    _listing_with_ghost(monkeypatch, '20260611')
+    with caplog.at_level('WARNING'):
+        pm.clean_up_folders('info.xlsx', basedir=str(tmp_path))       # used to raise FileNotFoundError
+    assert (assay / 'loaded' / '20260101' / 'grid_num.txt').exists()   # the real folder still moved
+    assert not (assay / 'toload_0' / '20260101').exists()
+    assert '20260611' in caplog.text and "can't be opened" in caplog.text
+
+
+def test_clean_up_leaves_a_loose_file_in_toload_alone(tmp_path, monkeypatch, caplog):
+    assay = _batch(tmp_path, 'grid_num\nP1\n')
+    (assay / 'toload_0' / 'x_edited.csv').write_text('edit')            # saved beside the date folder, not in it
+    monkeypatch.setattr(pm, '_read_info_sheet', lambda infile: (None, _info()))
+    with caplog.at_level('WARNING'):
+        pm.clean_up_folders('info.xlsx', basedir=str(tmp_path))
+    assert (assay / 'toload_0' / 'x_edited.csv').read_text() == 'edit'  # untouched, not deleted
+    assert (assay / 'loaded' / '20260101' / 'grid_num.txt').exists()
+    assert 'x_edited.csv' in caplog.text and 'not a date folder' in caplog.text
+
+
+def test_clean_up_warns_and_carries_on_when_toload_cannot_be_fully_removed(tmp_path, monkeypatch, caplog):
+    # A CSV still open in Excel can't be deleted on the share: rmtree fails after the copy.
+    share, assay = _batch_with_original(tmp_path, monkeypatch)
+
+    def stuck(path, *a, **k):
+        raise FileNotFoundError(2, 'No such file or directory', str(path))
+    monkeypatch.setattr(pm.shutil, 'rmtree', stuck)
+    with caplog.at_level('WARNING'):
+        pm.clean_up_folders('info.xlsx', basedir=str(tmp_path / 'out'), delete_orig=True, share_root=str(share))
+    assert (assay / 'loaded' / '20260101' / 'x.csv').read_text() == 'tidied copy'    # copy is safe
+    assert 'Close anything that has them open' in caplog.text and 'x.csv' in caplog.text
+    assert not (share / 'x.csv').exists()                                             # original still handled
+    monkeypatch.undo()                                                                  # Excel closed: rerun finishes
+    monkeypatch.setattr(pm, '_read_info_sheet', lambda infile: (None, _info()))
+    pm.clean_up_folders('info.xlsx', basedir=str(tmp_path / 'out'))
+    assert not (assay / 'toload_0' / '20260101').exists()
+    assert (assay / 'loaded' / '20260101' / 'x.csv').read_text() == 'tidied copy'
+
+
+def test_clean_up_rerun_treats_a_file_the_share_reports_missing_as_removed(tmp_path, monkeypatch, caplog):
+    # The traceback from the share: unlink of a file the folder still lists raises
+    # FileNotFoundError. The file is gone, so the clean-up should finish quietly.
+    share, assay = _batch_with_original(tmp_path, monkeypatch)
+    real_unlink = os.unlink
+
+    def unlink(path, *a, **k):
+        real_unlink(path, *a, **k)
+        if str(path).endswith('x.csv'):
+            raise FileNotFoundError(2, 'No such file or directory', str(path))
+    with monkeypatch.context() as m:
+        m.setattr(os, 'unlink', unlink)
+        with caplog.at_level('WARNING'):
+            pm.clean_up_folders('info.xlsx', basedir=str(tmp_path / 'out'))
+    assert not (assay / 'toload_0' / '20260101').exists()
+    assert (assay / 'loaded' / '20260101' / 'x.csv').read_text() == 'tidied copy'
+    assert 'Close anything that has them open' not in caplog.text
+
+
+def _write_plate_xlsx(path, wells, stamp):
+    """Same layout pandas writes, with the save-time metadata set to `stamp`."""
+    import zipfile
+    pd.DataFrame({'Well': wells, 'Sci_PosControl': [False] * len(wells)}).to_excel(path, index=False)
+    with zipfile.ZipFile(path) as z:
+        parts = {n: z.read(n) for n in z.namelist()}
+    parts['docProps/core.xml'] = parts['docProps/core.xml'] + f'<!-- {stamp} -->'.encode()
+    with zipfile.ZipFile(path, 'w') as z:
+        for n, data in parts.items():
+            z.writestr(n, data)
+
+
+def test_clean_up_rerun_accepts_an_xlsx_that_differs_only_in_save_timestamp(tmp_path, monkeypatch):
+    assay = _batch(tmp_path, 'grid_num\nP1\n')
+    loaded = assay / 'loaded' / '20260101'
+    loaded.mkdir(parents=True)
+    (loaded / 'grid_num.txt').write_text('grid_num\nP1\n')
+    _write_plate_xlsx(assay / 'toload_0' / '20260101' / 'P1_DR_plate.xlsx', ['A1', 'A2'], 'second save')
+    _write_plate_xlsx(loaded / 'P1_DR_plate.xlsx', ['A1', 'A2'], 'first save')
+    monkeypatch.setattr(pm, '_read_info_sheet', lambda infile: (None, _info()))
+    pm.clean_up_folders('info.xlsx', basedir=str(tmp_path))
+    assert not (assay / 'toload_0' / '20260101').exists()
+    assert (loaded / 'P1_DR_plate.xlsx').exists()
+
+
+def test_clean_up_still_refuses_an_xlsx_whose_cells_differ(tmp_path, monkeypatch):
+    assay = _batch(tmp_path, 'grid_num\nP1\n')
+    loaded = assay / 'loaded' / '20260101'
+    loaded.mkdir(parents=True)
+    (loaded / 'grid_num.txt').write_text('grid_num\nP1\n')
+    _write_plate_xlsx(assay / 'toload_0' / '20260101' / 'P1_DR_plate.xlsx', ['A1', 'A2'], 'second save')
+    _write_plate_xlsx(loaded / 'P1_DR_plate.xlsx', ['A1', 'B1'], 'first save')
+    monkeypatch.setattr(pm, '_read_info_sheet', lambda infile: (None, _info()))
+    with pytest.raises(FileExistsError, match='P1_DR_plate.xlsx'):
+        pm.clean_up_folders('info.xlsx', basedir=str(tmp_path))
+    assert (assay / 'toload_0' / '20260101' / 'P1_DR_plate.xlsx').exists()

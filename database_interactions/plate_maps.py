@@ -86,7 +86,9 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import logging
 import shutil
+import sys
 import filecmp
+import zipfile
 import re
 import datetime
 from sqlalchemy import bindparam, text
@@ -2679,14 +2681,22 @@ def clean_up_folders(infile=None, basedir='./', delete_orig=False, share_root=No
         if missing:
             raise OSError(f"Copy of {oldpath} to {newpath} is incomplete, so nothing was removed from "
                           "toload and no original was deleted. Missing or different: " + ", ".join(missing[:10]))
-        shutil.rmtree(oldpath)  # raises on failure; the full copy is already in loaded/
-        if os.path.exists(oldpath):
-            # On an SMB share the server can accept the delete but keep the folder
-            # ("delete pending", shown in Finder with a red no-entry badge) while
-            # another program, e.g. Pipeline Pilot or a Finder window, has it open.
-            # It goes away once that program lets go of it.
-            logger.warning(f"{oldpath} is empty but still listed on the share. Close anything "
-                           "that has it open (Pipeline Pilot, Finder windows); it should then disappear.")
+        try:
+            _remove_tree(oldpath)
+        except OSError as e:
+            # The full copy is already in loaded/ (checked above), so nothing is lost. On the
+            # Montreal share a folder can get stuck half-deleted (Finder draws a red badge), e.g.
+            # while a program has a file in it open. Say so, keep going, and a rerun finishes the
+            # job (copying the same files again is allowed).
+            left = _leftovers(oldpath)
+            logger.warning(f"Copied to {newpath}, but couldn't finish removing {oldpath} ({e}). "
+                           f"Still there: {left or 'the folder itself'}. Close anything that has them open "
+                           "(Excel, Pipeline Pilot, Finder windows inside the folder) and run this cell again, "
+                           "or delete the leftover by hand. loaded/ already has the copy.")
+        else:
+            if os.path.exists(oldpath):
+                logger.warning(f"{oldpath} was deleted but the share still lists it: close anything "
+                               "that has it open (Excel, Pipeline Pilot, Finder windows) and it will disappear.")
 
     # Delete the originals only after every move above has finished, and only
     # when this original's own copy is in loaded/ (the same assay folder, date
@@ -2862,6 +2872,43 @@ def _append_grid_num(outdir, gridnum):
     return gn
 
 
+def _remove_tree(path):
+    """shutil.rmtree that treats "already gone" as done.
+
+    On the Montreal share, a file deleted while another program (Excel, Finder)
+    had it open can still be listed, and unlinking it then reports
+    FileNotFoundError. The file is gone, which is what was asked for, so carry on.
+    Any other error (permissions, a file really in use) still raises.
+    """
+    def ignore_missing(func, failed_path, err):
+        err = err if isinstance(err, BaseException) else err[1]   # onexc vs onerror signatures
+        if not isinstance(err, FileNotFoundError):
+            raise err
+    if sys.version_info >= (3, 12):
+        shutil.rmtree(path, onexc=ignore_missing)
+    else:
+        shutil.rmtree(path, onerror=ignore_missing)
+
+
+def _leftovers(path):
+    """Names still inside path, or [] if it can't be listed."""
+    try:
+        return sorted(os.listdir(path))
+    except OSError:
+        return []
+
+
+def _is_openable_dir(path):
+    """True if path is a folder we can list. os.path.isdir alone isn't enough on
+    an SMB share: a folder deleted while another program had it open stays
+    listed, and listing it fails with FileNotFoundError."""
+    try:
+        with os.scandir(path):
+            return True
+    except OSError:
+        return False
+
+
 def _plan_loaded_moves(info, basedir):
     """ (toload_<i>/<datadir>, loaded/<datadir>) pairs for clean_up_folders. """
     moves = []
@@ -2879,10 +2926,42 @@ def _plan_loaded_moves(info, basedir):
                 # skip macOS metadata that is not a real directory
                 if datadir == ".DS_Store" or datadir.startswith('._'):
                     continue
-                pair = (os.path.join(toload, datadir), os.path.join(loaded, datadir))
+                path = os.path.join(toload, datadir)
+                if not _is_openable_dir(path):
+                    # Never copy or delete something we can't read. Leave it where it is.
+                    if os.path.isfile(path):
+                        why = "a file, not a date folder (put it inside the date folder to have it moved)"
+                    else:
+                        why = ("listed but can't be opened. This is usually a folder that was already "
+                               "deleted that the share still shows (Finder draws a red badge on it); it "
+                               "goes away once nothing has it open")
+                    logger.warning(f"Skipping {path}: {why}. Nothing was moved or deleted for it.")
+                    continue
+                pair = (path, os.path.join(loaded, datadir))
                 if pair not in moves:
                     moves.append(pair)
     return moves
+
+
+def _same_xlsx(a, b):
+    """True if two Excel files hold the same parts, ignoring docProps/ (the
+    author and created/modified timestamps pandas/openpyxl stamp on every save,
+    so re-saving identical data changes the bytes)."""
+    try:
+        with zipfile.ZipFile(a) as za, zipfile.ZipFile(b) as zb:
+            names = sorted(n for n in za.namelist() if not n.startswith('docProps/'))
+            if names != sorted(n for n in zb.namelist() if not n.startswith('docProps/')):
+                return False
+            return all(za.read(n) == zb.read(n) for n in names)
+    except (zipfile.BadZipFile, OSError):
+        return False
+
+
+def _same_contents(a, b):
+    """Same bytes, or (for Excel files) the same cell data apart from save-time metadata."""
+    if filecmp.cmp(a, b, shallow=False):
+        return True
+    return a.lower().endswith(('.xlsx', '.xlsm')) and _same_xlsx(a, b)
 
 
 def _loaded_conflicts(moves):
@@ -2897,7 +2976,7 @@ def _loaded_conflicts(moves):
                     continue
                 src = os.path.join(root, f)
                 dst = os.path.join(newpath, os.path.relpath(src, oldpath))
-                if os.path.exists(dst) and not filecmp.cmp(src, dst, shallow=False):
+                if os.path.exists(dst) and not _same_contents(src, dst):
                     conflicts.append(dst)
     return conflicts
 
