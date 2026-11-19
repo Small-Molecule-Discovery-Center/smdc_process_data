@@ -86,6 +86,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import logging
 import shutil
+import sys
 import filecmp
 import re
 import datetime
@@ -2680,17 +2681,16 @@ def clean_up_folders(infile=None, basedir='./', delete_orig=False, share_root=No
             raise OSError(f"Copy of {oldpath} to {newpath} is incomplete, so nothing was removed from "
                           "toload and no original was deleted. Missing or different: " + ", ".join(missing[:10]))
         try:
-            shutil.rmtree(oldpath)
+            _remove_tree(oldpath)
         except OSError as e:
             # The full copy is already in loaded/ (checked above), so nothing is lost. On the
-            # Montreal share a file another program has open (typically a CSV still open in
-            # Excel after a hand edit) can't be deleted: the folder stays half there and Finder
-            # draws a red badge. Say so, keep going, and a rerun finishes the job (copying the
-            # same files again is allowed).
+            # Montreal share a folder can get stuck half-deleted (Finder draws a red badge), e.g.
+            # while a program has a file in it open. Say so, keep going, and a rerun finishes the
+            # job (copying the same files again is allowed).
             left = _leftovers(oldpath)
             logger.warning(f"Copied to {newpath}, but couldn't finish removing {oldpath} ({e}). "
-                           f"Still there: {left or 'the folder itself'}. Close those files in Excel "
-                           "(and any Finder windows open inside the folder), then run this cell again, "
+                           f"Still there: {left or 'the folder itself'}. Close anything that has them open "
+                           "(Excel, Pipeline Pilot, Finder windows inside the folder) and run this cell again, "
                            "or delete the leftover by hand. loaded/ already has the copy.")
         else:
             if os.path.exists(oldpath):
@@ -2869,6 +2869,24 @@ def _append_grid_num(outdir, gridnum):
     with _FileInUse(path):
         gn.to_csv(path, index=False)
     return gn
+
+
+def _remove_tree(path):
+    """shutil.rmtree that treats "already gone" as done.
+
+    On the Montreal share, a file deleted while another program (Excel, Finder)
+    had it open can still be listed, and unlinking it then reports
+    FileNotFoundError. The file is gone, which is what was asked for, so carry on.
+    Any other error (permissions, a file really in use) still raises.
+    """
+    def ignore_missing(func, failed_path, err):
+        err = err if isinstance(err, BaseException) else err[1]   # onexc vs onerror signatures
+        if not isinstance(err, FileNotFoundError):
+            raise err
+    if sys.version_info >= (3, 12):
+        shutil.rmtree(path, onexc=ignore_missing)
+    else:
+        shutil.rmtree(path, onerror=ignore_missing)
 
 
 def _leftovers(path):

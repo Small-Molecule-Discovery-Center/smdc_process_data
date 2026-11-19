@@ -737,10 +737,29 @@ def test_clean_up_warns_and_carries_on_when_toload_cannot_be_fully_removed(tmp_p
     with caplog.at_level('WARNING'):
         pm.clean_up_folders('info.xlsx', basedir=str(tmp_path / 'out'), delete_orig=True, share_root=str(share))
     assert (assay / 'loaded' / '20260101' / 'x.csv').read_text() == 'tidied copy'    # copy is safe
-    assert 'Close those files in Excel' in caplog.text and 'x.csv' in caplog.text
+    assert 'Close anything that has them open' in caplog.text and 'x.csv' in caplog.text
     assert not (share / 'x.csv').exists()                                             # original still handled
     monkeypatch.undo()                                                                  # Excel closed: rerun finishes
     monkeypatch.setattr(pm, '_read_info_sheet', lambda infile: (None, _info()))
     pm.clean_up_folders('info.xlsx', basedir=str(tmp_path / 'out'))
     assert not (assay / 'toload_0' / '20260101').exists()
     assert (assay / 'loaded' / '20260101' / 'x.csv').read_text() == 'tidied copy'
+
+
+def test_clean_up_rerun_treats_a_file_the_share_reports_missing_as_removed(tmp_path, monkeypatch, caplog):
+    # The traceback from the share: unlink of a file the folder still lists raises
+    # FileNotFoundError. The file is gone, so the clean-up should finish quietly.
+    share, assay = _batch_with_original(tmp_path, monkeypatch)
+    real_unlink = os.unlink
+
+    def unlink(path, *a, **k):
+        real_unlink(path, *a, **k)
+        if str(path).endswith('x.csv'):
+            raise FileNotFoundError(2, 'No such file or directory', str(path))
+    with monkeypatch.context() as m:
+        m.setattr(os, 'unlink', unlink)
+        with caplog.at_level('WARNING'):
+            pm.clean_up_folders('info.xlsx', basedir=str(tmp_path / 'out'))
+    assert not (assay / 'toload_0' / '20260101').exists()
+    assert (assay / 'loaded' / '20260101' / 'x.csv').read_text() == 'tidied copy'
+    assert 'Close anything that has them open' not in caplog.text
