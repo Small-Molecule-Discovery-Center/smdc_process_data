@@ -763,3 +763,41 @@ def test_clean_up_rerun_treats_a_file_the_share_reports_missing_as_removed(tmp_p
     assert not (assay / 'toload_0' / '20260101').exists()
     assert (assay / 'loaded' / '20260101' / 'x.csv').read_text() == 'tidied copy'
     assert 'Close anything that has them open' not in caplog.text
+
+
+def _write_plate_xlsx(path, wells, stamp):
+    """Same layout pandas writes, with the save-time metadata set to `stamp`."""
+    import zipfile
+    pd.DataFrame({'Well': wells, 'Sci_PosControl': [False] * len(wells)}).to_excel(path, index=False)
+    with zipfile.ZipFile(path) as z:
+        parts = {n: z.read(n) for n in z.namelist()}
+    parts['docProps/core.xml'] = parts['docProps/core.xml'] + f'<!-- {stamp} -->'.encode()
+    with zipfile.ZipFile(path, 'w') as z:
+        for n, data in parts.items():
+            z.writestr(n, data)
+
+
+def test_clean_up_rerun_accepts_an_xlsx_that_differs_only_in_save_timestamp(tmp_path, monkeypatch):
+    assay = _batch(tmp_path, 'grid_num\nP1\n')
+    loaded = assay / 'loaded' / '20260101'
+    loaded.mkdir(parents=True)
+    (loaded / 'grid_num.txt').write_text('grid_num\nP1\n')
+    _write_plate_xlsx(assay / 'toload_0' / '20260101' / 'P1_DR_plate.xlsx', ['A1', 'A2'], 'second save')
+    _write_plate_xlsx(loaded / 'P1_DR_plate.xlsx', ['A1', 'A2'], 'first save')
+    monkeypatch.setattr(pm, '_read_info_sheet', lambda infile: (None, _info()))
+    pm.clean_up_folders('info.xlsx', basedir=str(tmp_path))
+    assert not (assay / 'toload_0' / '20260101').exists()
+    assert (loaded / 'P1_DR_plate.xlsx').exists()
+
+
+def test_clean_up_still_refuses_an_xlsx_whose_cells_differ(tmp_path, monkeypatch):
+    assay = _batch(tmp_path, 'grid_num\nP1\n')
+    loaded = assay / 'loaded' / '20260101'
+    loaded.mkdir(parents=True)
+    (loaded / 'grid_num.txt').write_text('grid_num\nP1\n')
+    _write_plate_xlsx(assay / 'toload_0' / '20260101' / 'P1_DR_plate.xlsx', ['A1', 'A2'], 'second save')
+    _write_plate_xlsx(loaded / 'P1_DR_plate.xlsx', ['A1', 'B1'], 'first save')
+    monkeypatch.setattr(pm, '_read_info_sheet', lambda infile: (None, _info()))
+    with pytest.raises(FileExistsError, match='P1_DR_plate.xlsx'):
+        pm.clean_up_folders('info.xlsx', basedir=str(tmp_path))
+    assert (assay / 'toload_0' / '20260101' / 'P1_DR_plate.xlsx').exists()

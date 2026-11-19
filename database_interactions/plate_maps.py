@@ -88,6 +88,7 @@ import logging
 import shutil
 import sys
 import filecmp
+import zipfile
 import re
 import datetime
 from sqlalchemy import bindparam, text
@@ -2942,6 +2943,27 @@ def _plan_loaded_moves(info, basedir):
     return moves
 
 
+def _same_xlsx(a, b):
+    """True if two Excel files hold the same parts, ignoring docProps/ (the
+    author and created/modified timestamps pandas/openpyxl stamp on every save,
+    so re-saving identical data changes the bytes)."""
+    try:
+        with zipfile.ZipFile(a) as za, zipfile.ZipFile(b) as zb:
+            names = sorted(n for n in za.namelist() if not n.startswith('docProps/'))
+            if names != sorted(n for n in zb.namelist() if not n.startswith('docProps/')):
+                return False
+            return all(za.read(n) == zb.read(n) for n in names)
+    except (zipfile.BadZipFile, OSError):
+        return False
+
+
+def _same_contents(a, b):
+    """Same bytes, or (for Excel files) the same cell data apart from save-time metadata."""
+    if filecmp.cmp(a, b, shallow=False):
+        return True
+    return a.lower().endswith(('.xlsx', '.xlsm')) and _same_xlsx(a, b)
+
+
 def _loaded_conflicts(moves):
     """ Files a move would overwrite with different contents. """
     conflicts = []
@@ -2954,7 +2976,7 @@ def _loaded_conflicts(moves):
                     continue
                 src = os.path.join(root, f)
                 dst = os.path.join(newpath, os.path.relpath(src, oldpath))
-                if os.path.exists(dst) and not filecmp.cmp(src, dst, shallow=False):
+                if os.path.exists(dst) and not _same_contents(src, dst):
                     conflicts.append(dst)
     return conflicts
 

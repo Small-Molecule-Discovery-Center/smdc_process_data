@@ -425,11 +425,17 @@ uses, restart the kernel, and import with `from database_interactions import pla
 (the flat `import plate_maps` no longer works).
 
 **`clean_up_folders` warns "couldn't finish removing ... toload", or a `toload_0/<date>` folder is left with a red badge in Finder**
-The Montreal share left the folder half-deleted, for example while a program (Excel, Pipeline Pilot, a Finder window)
-has something in it open. `loaded/` already has the full copy (checked before anything is removed). Close
-anything that has the folder open and run the clean-up cell again, or delete the leftover by hand. A file the share
+The Montreal share left the folder half-deleted (cause not established; it can happen even when nothing is open).
+`loaded/` already has the full copy (checked before anything is removed). Close anything that might have the folder
+open, run the clean-up cell again, or delete the leftover by hand. A file the share
 lists but reports as already gone counts as deleted. Entries in `toload_<n>` that can't be opened, or files saved there
 outside a date folder, are skipped with a warning and never deleted.
+
+**`FileExistsError: These files are already in loaded/ with different contents`**
+A file in `toload_<n>` differs from the one already in `loaded/<date>`. Re-running with the same data is fine: files
+are compared by content, and Excel files ignore the author/timestamp metadata saved with them, so regenerating a
+`*_DR_plate.xlsx` from the same data is not a conflict. If the error persists, the cells really differ; open both and
+compare, then delete or rename the one you don't want.
 
 **`ConnectionError: Cannot reach HiTS ...`**
 The SSH tunnel is down, or the `mysql_*` variables are wrong. Reopen the tunnel
