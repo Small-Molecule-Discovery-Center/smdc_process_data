@@ -692,3 +692,16 @@ def test_check_dr_concentrations_catches_pasted_7_decimals(tmp_path):
     info = pd.DataFrame()
     info.attrs['dr_plates'] = paths
     assert len(pm.check_dr_concentrations(info)) == 1
+
+
+@pytest.mark.parametrize('style', ['darkgrid', 'white', 'ticks'])
+def test_plate_heatmap_never_draws_grid_lines(style):
+    # ax.grid() toggles, so the grid used to appear whenever the active seaborn style had it off.
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+    sns.set_theme(style=style)
+    df = pd.DataFrame({'Well': ['A01', 'A02', 'B01', 'B02'], 'v': [1.0, 2.0, 3.0, 4.0]})
+    pm.draw_plate_heatmap(barcode='T1', df=df, wells='Well', values='v', labels='v', cbar=False)
+    ax = plt.gcf().axes[0]
+    assert not any(l.get_visible() for l in ax.xaxis.get_gridlines() + ax.yaxis.get_gridlines())
+    plt.close('all')

@@ -429,7 +429,7 @@ def draw_plate_heatmap(barcode='OTPARP1234-Eco1', df=None, wells='Well', values=
                 center=center, vmin=vmin, vmax=vmax, cmap=cmap,
                 annot_kws={"size": 7}
                 )
-    ax.grid(which='major')
+    ax.grid(False)  # a bare ax.grid() TOGGLES: it turned the style's grid off under darkgrid but on under white/ticks
     ax.set_title(f"{barcode} {values}");
     # Fixed margins rather than tight_layout, which would size the plate
     # differently with and without colourbar tick labels.
