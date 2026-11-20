@@ -916,6 +916,38 @@ def _envision_section_kind(row):
     return None
 
 
+_NUMBER = re.compile(r'^-?(\d+\.?\d*|\.\d+)([eE][-+]?\d+)?$')
+_GRID_SHAPES = {12: 8, 24: 16, 48: 32}   # columns -> rows for 96, 384 and 1536-well plates
+
+
+def _unlabeled_grid_runs(rows, stop):
+    """(first, last+1, columns) row ranges before `stop` that are a whole plate grid of
+    plain numbers with no title, column-number row or row letters (the data
+    comes first in some exports). Only a run with exactly the number of rows of
+    a 96/384/1536 plate counts, so a lone header row or the Plate information
+    rows (they hold text) are never taken for one."""
+    def width(r):
+        cells = [str(v).strip() for v in r]
+        while cells and not cells[-1]:
+            cells.pop()
+        ok = cells and all(not c or _NUMBER.match(c) for c in cells) and any(cells)
+        return len(cells) if ok else 0
+
+    runs, i = [], 0
+    while i < stop:
+        n = width(rows[i])
+        if n not in _GRID_SHAPES:
+            i += 1
+            continue
+        j = i
+        while j < stop and width(rows[j]) == n:
+            j += 1
+        if j - i == _GRID_SHAPES[n]:
+            runs.append((i, j, n))
+        i = j
+    return runs
+
+
 def arrange_envision_blocks_in_file(csv_path: str) -> Tuple[bool, int]:
     """Lay out every block of an EnVision CSV the way the upload expects, in place.
 
@@ -935,7 +967,11 @@ def arrange_envision_blocks_in_file(csv_path: str) -> Tuple[bool, int]:
 
     A block is one Plate information, one Background information and one
     results section, in any order in the file: an export with the results
-    placed first is re-ordered. Section contents are not changed, only their
+    placed first is re-ordered. A results grid with no title, column numbers
+    or row letters (just rows of numbers, as some exports write when the data
+    comes first) gets a title line, the column numbers 01..N and the row
+    letters A.. added so it can be handled like any other results section.
+    Its values are not changed. Section contents are not changed, only their
     order and the blank lines between them. Everything from 'Basic assay
     information' on is kept as it is.
 
@@ -957,10 +993,18 @@ def arrange_envision_blocks_in_file(csv_path: str) -> Tuple[bool, int]:
 
     stop = next((i for i, r in enumerate(rows) if r and str(r[0]).strip().startswith('Basic assay information')),
                 len(rows))
+    blank_row = next((r for r in rows[:stop] if r and blank(r) and len(r) > 1), [])
+    added = set()   # indices (in the rows below) of titles this function made up
+    for a, b, n in reversed(_unlabeled_grid_runs(rows, stop)):
+        letters = _grid_row_labels(b - a)
+        rows[a:b] = ([['Results (title, column numbers and row letters added by tidy)'],
+                      [''] + [f'{c:02d}' for c in range(1, n + 1)]]
+                     + [[lab] + list(r) for lab, r in zip(letters, rows[a:b])])
+        stop += 2
+        added = {i + 2 for i in added if i >= a} | {i for i in added if i < a} | {a}
     starts = [i for i in range(stop) if _envision_section_kind(rows[i])]
     if not starts:
         return (False, 0)
-    blank_row = next((r for r in rows[:stop] if r and blank(r) and len(r) > 1), [])
 
     def strip_trailing_blanks(block):
         while block and blank(block[-1]):
@@ -1003,7 +1047,8 @@ def arrange_envision_blocks_in_file(csv_path: str) -> Tuple[bool, int]:
                            "lines. Re-export it from EnVision or fix it by hand.")
         block += results + [blank_row]
         first_at = min(at for at, _ in g.values())
-        if [list(r) for r in rows[first_at:first_at + len(block)]] != [list(r) for r in block]:
+        if (g['results'][0] in added
+                or [list(r) for r in rows[first_at:first_at + len(block)]] != [list(r) for r in block]):
             rearranged += 1
         out += block
     trailing = 0

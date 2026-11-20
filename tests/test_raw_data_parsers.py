@@ -389,3 +389,51 @@ def test_layout_check_flags_wrong_row_or_column_counts_in_any_block():
     assert len(short) == 1 and 'expected row P' in short[0] and 'blank line' in short[0]
     narrow = raw_data_parsers._block_layout_problems(ok + blk(ncols=23))
     assert len(narrow) == 1 and 'should be 1 to 24' in narrow[0] and '23 columns' in narrow[0]
+
+
+ADDED_TITLE = 'Results (title, column numbers and row letters added by tidy)'
+
+
+def _bare_grid(value, nrows=16, ncols=24):
+    """Rows of plain numbers: no title, no column numbers, no row letters, trailing comma."""
+    return [','.join([f'{value}.{r}{c}' for c in range(ncols)] + ['']) for r in range(nrows)]
+
+
+def _data_first_layout(*blocks):
+    """Each unlabeled grid is followed by its own Plate and Background information."""
+    lines = []
+    for label, b in blocks:
+        lines += _bare_grid(label) + [''] + b['plate'] + [''] + b['background'] + ['']
+    return lines + ['', 'Basic assay information ,', 'Assay ID: ,,,,4310']
+
+
+def test_arrange_labels_data_first_grids_and_keeps_each_with_its_own_plate_information(tmp_path):
+    b1, b2 = _block('1'), _block('2')
+    lines = _data_first_layout((1, b1), (2, b2))
+    (changed, n), out = _arrange(tmp_path, lines)
+    assert changed and n == 2
+    header = ',' + ','.join(f'{c:02d}' for c in range(1, 25))
+    expected = []
+    for label, b in ((1, b1), (2, b2)):
+        grid = [f'{lab},{row}' for lab, row in zip('ABCDEFGHIJKLMNOP', _bare_grid(label))]
+        expected += b['plate'] + [''] + b['background'] + [''] + [f'"{ADDED_TITLE}"', header] + grid + ['']
+    expected += ['', 'Basic assay information ,', 'Assay ID: ,,,,4310']
+    assert out == expected                       # values and their order untouched; tail untouched
+    assert raw_data_parsers._block_layout_problems(list(csv.reader(out))) == []
+    assert _arrange(tmp_path, out)[0] == (False, 0)                     # only once
+
+
+def test_arrange_labels_a_96_well_data_first_grid(tmp_path):
+    b = _block('1')
+    lines = _bare_grid(1, nrows=8, ncols=12) + [''] + b['plate'] + [''] + b['background'] + ['', 'Basic assay information ,']
+    (changed, n), out = _arrange(tmp_path, lines)
+    assert changed and n == 1
+    assert out[:3] == b['plate'] and out[11].startswith('A,1.00,')
+    assert out[10] == ',' + ','.join(f'{c:02d}' for c in range(1, 13))
+
+
+def test_arrange_leaves_a_number_grid_with_the_wrong_number_of_rows_alone(tmp_path):
+    b = _block('1')
+    lines = _bare_grid(1, nrows=15) + [''] + b['plate'] + [''] + b['background'] + ['', 'Basic assay information ,']
+    result, out = _arrange(tmp_path, lines)
+    assert result == (False, 0) and out == lines
