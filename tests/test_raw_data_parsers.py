@@ -251,10 +251,10 @@ def _tidy_layout(*blocks):
     return lines + ['', 'Basic assay information ,', 'Assay ID: ,,,,4310']
 
 
-def _arrange(tmp_path, lines):
+def _arrange(tmp_path, lines, **kwargs):
     f = tmp_path / 'run.csv'
     f.write_text('\n'.join(lines) + '\n')
-    result = raw_data_parsers.arrange_envision_blocks_in_file(str(f))
+    result = raw_data_parsers.arrange_envision_blocks_in_file(str(f), **kwargs)
     return result, f.read_text().split('\n')[:-1]
 
 
@@ -281,7 +281,7 @@ def test_arrange_moves_plate_and_background_info_above_results_in_every_block(tm
     for b in (b1, b2):
         results_first += b['results'] + [''] + b['plate'] + [''] + b['background'] + ['']
     results_first += ['', 'Basic assay information ,', 'Assay ID: ,,,,4310']
-    (changed, n), out = _arrange(tmp_path, results_first)
+    (changed, n), out = _arrange(tmp_path, results_first, data_first=True)
     assert changed and n == 2
     assert out == _tidy_layout(b1, b2)
     assert raw_data_parsers._block_layout_problems(list(csv.reader(out))) == []
@@ -389,3 +389,102 @@ def test_layout_check_flags_wrong_row_or_column_counts_in_any_block():
     assert len(short) == 1 and 'expected row P' in short[0] and 'blank line' in short[0]
     narrow = raw_data_parsers._block_layout_problems(ok + blk(ncols=23))
     assert len(narrow) == 1 and 'should be 1 to 24' in narrow[0] and '23 columns' in narrow[0]
+
+
+ADDED_TITLE = 'Results (title, column numbers and row letters added by tidy)'
+
+
+def _bare_grid(value, nrows=16, ncols=24):
+    """Rows of plain numbers: no title, no column numbers, no row letters, trailing comma."""
+    return [','.join([f'{value}.{r}{c}' for c in range(ncols)] + ['']) for r in range(nrows)]
+
+
+def _data_first_layout(*blocks):
+    """Each unlabeled grid is followed by its own Plate and Background information."""
+    lines = []
+    for label, b in blocks:
+        lines += _bare_grid(label) + [''] + b['plate'] + [''] + b['background'] + ['']
+    return lines + ['', 'Basic assay information ,', 'Assay ID: ,,,,4310']
+
+
+def test_arrange_labels_data_first_grids_and_keeps_each_with_its_own_plate_information(tmp_path):
+    b1, b2 = _block('1'), _block('2')
+    lines = _data_first_layout((1, b1), (2, b2))
+    (changed, n), out = _arrange(tmp_path, lines, data_first=True)
+    assert changed and n == 2
+    header = ',' + ','.join(f'{c:02d}' for c in range(1, 25))
+    expected = []
+    for label, b in ((1, b1), (2, b2)):
+        grid = [f'{lab},{row}' for lab, row in zip('ABCDEFGHIJKLMNOP', _bare_grid(label))]
+        expected += b['plate'] + [''] + b['background'] + [''] + [f'"{ADDED_TITLE}"', header] + grid + ['']
+    expected += ['', 'Basic assay information ,', 'Assay ID: ,,,,4310']
+    assert out == expected                       # values and their order untouched; tail untouched
+    assert raw_data_parsers._block_layout_problems(list(csv.reader(out))) == []
+    assert _arrange(tmp_path, out, data_first=True)[0] == (False, 0)    # only once
+
+
+def test_arrange_labels_a_96_well_data_first_grid(tmp_path):
+    b = _block('1')
+    lines = _bare_grid(1, nrows=8, ncols=12) + [''] + b['plate'] + [''] + b['background'] + ['', 'Basic assay information ,']
+    (changed, n), out = _arrange(tmp_path, lines, data_first=True)
+    assert changed and n == 1
+    assert out[:3] == b['plate'] and out[11].startswith('A,1.00,')
+    assert out[10] == ',' + ','.join(f'{c:02d}' for c in range(1, 13))
+
+
+def test_arrange_leaves_a_number_grid_with_the_wrong_number_of_rows_alone(tmp_path):
+    b = _block('1')
+    lines = _bare_grid(1, nrows=15) + [''] + b['plate'] + [''] + b['background'] + ['', 'Basic assay information ,']
+    result, out = _arrange(tmp_path, lines, data_first=True)
+    assert result == (False, 0) and out == lines
+
+
+def test_data_first_file_is_left_alone_until_data_first_is_confirmed(tmp_path, caplog):
+    lines = _data_first_layout((1, _block('1')), (2, _block('2')))
+    problems = []
+    with caplog.at_level('WARNING'):
+        result, out = _arrange(tmp_path, lines, problems=problems)          # default data_first=False
+    assert result == (False, 0) and out == lines                            # not a single line changed
+    assert 'looks reversed' in caplog.text and 'data_first=True' in caplog.text
+    assert len(problems) == 1 and 'data_first=True' in problems[0]
+
+
+def test_tidy_reports_reversed_data_and_touches_nothing_without_data_first(tmp_path):
+    lines = _data_first_layout((1, _block('1')), (2, _block('2')))
+    f = tmp_path / 'run.csv'
+    f.write_text('\n'.join(lines) + '\n')
+    out = raw_data_parsers.tidy_envision_files([str(f)])
+    assert 'data_first=True' in out.loc[0, 'problems'] and 'looks reversed' in out.loc[0, 'problems']
+    assert out.loc[0, 'blocks re-arranged'] == 0 and f.read_text() == '\n'.join(lines) + '\n'
+
+
+def test_tidy_with_data_first_keeps_every_data_block_paired_with_the_info_after_it(tmp_path):
+    b = [_block(str(i)) for i in range(1, 5)]
+    f = tmp_path / 'run.csv'
+    f.write_text('\n'.join(_data_first_layout(*zip(range(1, 5), b))) + '\n')
+    out = raw_data_parsers.tidy_envision_files([str(f)], data_first=True)
+    assert out.loc[0, 'problems'] == '' and out.loc[0, 'blocks re-arranged'] == 4
+    rows = list(csv.reader(f.read_text().splitlines()))
+    grids = [r for r in rows if len(r) > 24 and len(r[0]) == 1 and r[0].isalpha() and r[1][:1].isdigit()]
+    assert len(grids) == 4 * 16                                              # all four data blocks kept
+    plates = [r[0] for r in rows if r and r[0] in '1234' and len(r) > 1 and r[1] == '1']
+    firsts = [r[1].split('.')[0] for r in grids if r[0] == 'A']
+    assert plates == firsts == ['1', '2', '3', '4']                          # each grid sits under its own info
+
+
+def test_data_first_true_refuses_a_file_in_the_usual_order(tmp_path):
+    good = _tidy_layout(_block('1'), _block('2'))
+    problems = []
+    result, out = _arrange(tmp_path, good, data_first=True, problems=problems)
+    assert result == (False, 0) and out == good
+    assert 'data_first=False' in problems[0]
+
+
+def test_arrange_refuses_to_write_if_a_grid_row_would_be_lost(tmp_path, monkeypatch):
+    lines = _data_first_layout((1, _block('1')))
+    f = tmp_path / 'run.csv'
+    f.write_text('\n'.join(lines) + '\n')
+    monkeypatch.setattr(raw_data_parsers, '_grid_values', lambda rows: len(rows))   # make the two layouts differ
+    with pytest.raises(ValueError, match='lost or changed'):
+        raw_data_parsers.arrange_envision_blocks_in_file(str(f), data_first=True)
+    assert f.read_text() == '\n'.join(lines) + '\n'
