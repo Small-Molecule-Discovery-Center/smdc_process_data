@@ -3,6 +3,7 @@
 
 import pandas as pd
 import os
+import collections
 import numpy as np
 import logging
 import re
@@ -948,7 +949,8 @@ def _unlabeled_grid_runs(rows, stop):
     return runs
 
 
-def arrange_envision_blocks_in_file(csv_path: str) -> Tuple[bool, int]:
+def arrange_envision_blocks_in_file(csv_path: str, data_first: bool = False, problems: list = None,
+                                    _write: bool = True) -> Tuple[bool, int]:
     """Lay out every block of an EnVision CSV the way the upload expects, in place.
 
     Each block becomes, counting its 'Plate information' line as line 1:
@@ -980,13 +982,37 @@ def arrange_envision_blocks_in_file(csv_path: str) -> Tuple[bool, int]:
     between them). check_envision_csv still reports anything left over, such
     as a third background row or values pasted into the grid.
 
+    The usual export is Plate information, Background information, then the
+    data. Some instruments write data, Plate information, Background
+    information instead. The two can't be told apart safely, since a data grid
+    could be paired with the wrong plate's information, so you say which it is:
+    data_first=False (default) expects the usual order and, if the data comes
+    before its Plate information, changes nothing and says to set
+    data_first=True; data_first=True expects data first and refuses a file in
+    the usual order. Every data block is kept, whichever way it is: a check
+    before writing refuses to write the file if any grid row would be lost
+    or changed.
+
+    Args:
+        csv_path: the EnVision CSV, rewritten in place.
+        data_first: True if this export has each data block before its own
+            Plate information and Background information.
+        problems: optional list; the reason the file was left alone is appended.
+
     Returns:
         (changed, blocks_rearranged)
     """
+    def refuse(msg):
+        logger.warning(f"{csv_path}: {msg}")
+        if problems is not None:
+            problems.append(msg)
+        return (False, 0)
+
     with open(csv_path, newline='') as f:
         text = f.read()
     newline = '\r\n' if '\r\n' in text else '\n'
     rows = list(csv.reader(text.splitlines()))
+    original = [list(r) for r in rows]
 
     def blank(r):
         return not any(str(v).strip() for v in r)
@@ -1029,6 +1055,21 @@ def arrange_envision_blocks_in_file(csv_path: str) -> Tuple[bool, int]:
                        "file; re-export it from EnVision.")
         return (False, 0)
 
+    data_before_info = [g for g in groups if g['results'][0] < g['plate'][0]]
+    if data_first is False and data_before_info:
+        return refuse(
+            f"the data looks reversed: in {len(data_before_info)} block(s) the data comes before its Plate "
+            "information (data, Plate information, Background information; the usual export is Plate information, "
+            "Background information, data). Nothing was changed. If this instrument really exports that way, run "
+            "tidy again with data_first=True, so each data block is paired with the Plate information that follows "
+            "it. Otherwise re-export the file.")
+    if data_first is True and len(data_before_info) < len(groups):
+        first = next(g for g in groups if g['results'][0] > g['plate'][0])
+        return refuse(
+            f"data_first=True, but the Plate information on line {first['plate'][0] + 1} comes before its data "
+            "(the usual export order). Nothing was changed. Run tidy with data_first=False for this file, or "
+            "re-export it.")
+
     out = [r for r in rows[:starts[0]]]
     rearranged = 0
 
@@ -1059,10 +1100,32 @@ def arrange_envision_blocks_in_file(csv_path: str) -> Tuple[bool, int]:
     out += [blank_row] * max(0, trailing - 1) + rows[stop:]
     if out == rows:
         return (False, 0)
+    if _grid_values(out) != _grid_values(original):
+        raise ValueError(f"{csv_path}: re-arranging would have lost or changed rows of data, so the file was "
+                         "not written. Please report this file.")
+    if not _write:
+        return (True, rearranged)
     with open(csv_path, 'w', newline='') as f:
         csv.writer(f, lineterminator=newline).writerows(out)
     logger.info(f"Re-arranged {rearranged} block(s) of {csv_path} so row A of each results grid is on line 12")
     return (True, rearranged)
+
+
+def _grid_values(rows):
+    """Every row of a results grid (12+ plain numbers, with or without a row
+    letter in front) as a tuple, counted, so two layouts can be compared for
+    lost or changed data."""
+    seen = collections.Counter()
+    for r in rows:
+        cells = [str(v).strip() for v in r]
+        if len(cells) > 1 and cells[0].isalpha() and len(cells[0]) <= 2:
+            cells = cells[1:]
+        cells = [c for c in cells if c]
+        if len(cells) >= 12 and all(_NUMBER.match(c) for c in cells):
+            if [c.lstrip('0') for c in cells] == [str(i) for i in range(1, len(cells) + 1)]:
+                continue    # the column-number row (01, 02, ...), not data
+            seen[tuple(cells)] += 1
+    return seen
 
 
 def _envision_ncols(csv_path, default=25):
@@ -1077,7 +1140,7 @@ def _envision_ncols(csv_path, default=25):
     return default
 
 
-def tidy_envision_files(paths, ncols: int = None) -> pd.DataFrame:
+def tidy_envision_files(paths, ncols: int = None, data_first: bool = False) -> pd.DataFrame:
     """Tidy the given EnVision CSVs in place and check what can't be tidied.
 
     Required before uploading EnVision files. Fixes: trims extra columns a
@@ -1089,6 +1152,14 @@ def tidy_envision_files(paths, ncols: int = None) -> pd.DataFrame:
     cleaned by hand: values pasted outside the grid, grid rows Pipeline Pilot
     would drop, and reads covering different numbers of wells. See
     check_envision_csv.
+
+    data_first says how the instrument orders each block. False (default) is the
+    usual Plate information, Background information, data. Use True for an
+    export that writes data, Plate information, Background information. If
+    a file doesn't match the setting it is left unchanged and the mismatch is
+    listed under problems, so a data grid can't be paired with the wrong
+    plate's information by accident. Every data block is kept; which reads
+    are uploaded is decided later in the Pipeline Pilot protocol, never here.
 
     Meant for the raw files make_dr_platemaps_and_folders copied into the
     toload folders (plate_maps.raw_files(info)), so only the files that will
@@ -1106,13 +1177,20 @@ def tidy_envision_files(paths, ncols: int = None) -> pd.DataFrame:
         raise FileNotFoundError(f"File(s) not found: {missing}")
     csvs = [p for p in paths if p.lower().endswith('.csv') and not os.path.basename(p).startswith('._')]
     skipped = len(paths) - len(csvs)
-    rows = []
+    rows, refused = [], set()
     for p in csvs:
+        order_problems = []   # also logged by arrange_envision_blocks_in_file
+        arrange_envision_blocks_in_file(p, data_first=data_first, problems=order_problems, _write=False)
+        if order_problems:    # nothing is touched until the order is confirmed
+            refused.add(p)
+            rows.append({'file': p, 'rows trimmed': 0, 'blocks re-arranged': 0, "Z' blocks filled": 0,
+                         'wells per read': '', 'reads differ': False, 'problems': '; '.join(order_problems)})
+            continue
         width = ncols or _envision_ncols(p)
         plate_type = {13: '96', 25: '384', 49: '1536'}.get(width)
         try:
             _, trimmed = trim_csv_columns_in_file(p, width)
-            _, arranged = arrange_envision_blocks_in_file(p)
+            _, arranged = arrange_envision_blocks_in_file(p, data_first=data_first)
             _, zblocks = fill_zprime_blocks_in_file(p)
         except PermissionError as e:
             raise PermissionError(file_in_use_message(p)) from e
@@ -1131,6 +1209,8 @@ def tidy_envision_files(paths, ncols: int = None) -> pd.DataFrame:
     fixed = ['rows trimmed', 'blocks re-arranged', "Z' blocks filled"]
     changed = int((out[fixed].sum(axis=1) > 0).sum()) if len(out) else 0
     for _, r in out[out['problems'] != ''].iterrows():
+        if r['file'] in refused:
+            continue
         logger.warning(f"{r['file']} doesn't look like an untouched EnVision export, and tidying can't fix it: "
                        f"{r['problems']}. Fix it by hand (leave missing wells blank, not 0).")
     note = f" (skipped {skipped} non-CSV file(s))" if skipped else ""
@@ -1186,8 +1266,8 @@ def _block_layout_problems(lines, nrows=16):
     results = [i for i in range(stop) if first(i).startswith(('Calculated results', 'Results for'))]
     if results and (not starts or results[0] < starts[0]):
         problems.append(f"line {results[0] + 1}: a results block comes before any Plate information. Export with "
-                        "Plate information and Background information placed before the results, or run the tidy step, "
-                        "which re-arranges the blocks.")
+                        "Plate information and Background information placed before the results, or, if this instrument "
+                        "always writes the data first, run the tidy step with data_first=True.")
     for b in starts:
         n = b + 1  # 1-based line number of this block's Plate information
         expect = [(1, lambda i: first(i).startswith('Plate'), "the Plate information header row"),
