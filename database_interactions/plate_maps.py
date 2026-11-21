@@ -1100,7 +1100,8 @@ def _standardize_dids_columns(dids):
 
     Called defensively after nearly every merge in the DR pipeline, because
     each lookup contributes its own spelling of the concentration column.
-    Note several distinct source spellings all fold into '[compound] uM'.
+    Note several distinct source spellings all fold into '[compound] uM',
+    including the Biomek worklist template's 'Concentration (uM)' header.
     """
     return _canonicalize_columns(dids, {
         'smdcid': 'SMDC_ID',
@@ -1112,6 +1113,8 @@ def _standardize_dids_columns(dids):
         'assayid': 'Assay ID',
         'conc': '[compound] uM',
         'compoundum': '[compound] uM',
+        'concentration': '[compound] uM',
+        'concentrationum': '[compound] uM',  # 'Concentration (uM)', the Biomek template header
         'destinationplateconcentration': '[compound] uM',
     })
 
