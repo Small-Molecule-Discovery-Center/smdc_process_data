@@ -4,7 +4,7 @@ import pytest
 Verifies that _normalize_share_path reproduces the ORIGINAL inline logic exactly
 (so extracting it changed nothing), that _assay_dir_name is stable across the
 int/float/str spellings that used to break clean_up_folders, and that
-handle_zero_concentrations drops zeros without prompting.
+handle_zero_concentrations keeps zeros as empty wells without prompting.
 """
 import sys, types
 
@@ -109,12 +109,13 @@ def test_assay_dir_name_agrees_across_spellings():
     assert pm._assay_dir_name('map', 'MyAssay') == 'MyAssay'
 
 
-def test_handle_zero_concentrations_drops_zeros_without_prompting(monkeypatch):
+def test_handle_zero_concentrations_keeps_zeros_as_empty_wells_without_prompting(monkeypatch):
     monkeypatch.setattr('builtins.input', lambda *a: pytest.fail('handle_zero_concentrations prompted'))
     df = pd.DataFrame({'Destination well': ['A01', 'A02', 'A03', 'A04'],
                        '[compound] uM': [10.0, 1.0, 0.0, 0.0]})
     out = pm.handle_zero_concentrations(df)
-    assert out['[compound] uM'].tolist() == [10.0, 1.0]
+    assert out['Destination well'].tolist() == ['A01', 'A02', 'A03', 'A04']
+    assert out['[compound] uM'].tolist()[:2] == [10.0, 1.0] and out['[compound] uM'][2:].isna().all()
     assert len(pm.handle_zero_concentrations(pd.DataFrame({'[compound] uM': [10.0, 1.0]}))) == 2
 
 

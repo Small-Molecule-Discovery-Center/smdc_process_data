@@ -1646,11 +1646,16 @@ def make_dr_platemaps(dp, row, users, basedir=None, replace_dict=None, control_d
             Matching wells are emitted as Sci_PosControl / Sci_NegControl booleans,
             and the labels are automatically treated as non-compound SMDC_ID values.
     Returns:
-        DataFrame: one row per destination well with columns SMDC_ID, Lot,
-            Source plate, Source well, Destination plate, Destination well,
-            [compound] uM, Assay ID. Missing values are filled with the string
-            'NA', which is what the HiTS loader expects. Wells with zero
-            concentration are dropped, i.e. treated as empty wells.
+        DataFrame: one row for EVERY well of the plate (96, 384 or 1536), in
+            plate order, with columns SMDC_ID, Lot, Source plate, Source well,
+            Destination plate, Destination well, [compound] uM, Assay ID,
+            Sci_PosControl, Sci_NegControl. Missing values are filled with the
+            string 'NA', which is what the HiTS loader expects.
+            Empty wells (nothing drawn in the map, a well missing from a Biomek
+            sheet, or a zero concentration) stay in the manifest with NA fields
+            and both control flags False. The HiTS load step is what skips them;
+            the upload protocol tags control wells from these flags on every
+            well of the plate, so a well missing from the manifest fails it.
 
     Non-interactive.
     """
@@ -1718,16 +1723,16 @@ def make_dr_platemaps(dp, row, users, basedir=None, replace_dict=None, control_d
     dids = dids[dids['Destination well'].notna()]
     dids = dids.drop_duplicates()
 
-    # Sanity check on row count. A plate should have exactly one row per well
-    # (320 = a 384w plate with the 4 control columns excluded). Anything else
-    # usually means a merge fanned out because a compound was found on more
-    # than one source plate.
-    if len(dids) not in [96, 384, 1536, 320]:
-        logging.warning(f"Your plate has {len(dids)} wells. Was a compound pulled from two plates?")
+    # Fan-out check: a destination well listed more than once usually means a
+    # merge fanned out because a compound was found on more than one source plate.
+    dup = dids['Destination well'].duplicated(keep=False)
+    if dup.any():
+        wells = sorted(dids.loc[dup, 'Destination well'].astype(str).unique())
+        logging.warning(f"{grid_num}: {len(wells)} well(s) appear more than once "
+                        f"(e.g. {', '.join(wells[:5])}). Was a compound pulled from two plates?")
 
-    # Only now drop the empty (zero-concentration) wells. Doing this after the
-    # count above means the count sees the full plate, so the warning stays
-    # meaningful instead of firing on every plate with empty wells.
+    # Every well of the plate goes in the manifest; empty ones are skipped at load.
+    dids = pad_to_full_plate(dids, size=_plate_size_from_info(row))
     dids = handle_zero_concentrations(dids)
     dids = _round_concentrations(dids)
 
@@ -2199,31 +2204,113 @@ def _round_concentrations(dids, sig_figs=CONC_SIG_FIGS):
     return dids
 
 
+PLATE_GEOMETRY = {96: (8, 12), 384: (16, 24), 1536: (32, 48)}
+
+# Manifest fields an empty well must not carry: it holds no compound.
+_EMPTY_WELL_BLANK = ('SMDC_ID', 'Lot', 'Source plate', 'Source well', '[compound] uM', 'conc')
+
+
+def _split_wells(wells):
+    """(row letters, column number) for well names like 'A1', 'A01' or 'AF48'; NaN where unparseable."""
+    parts = pd.Series(wells, dtype=object).astype(str).str.strip().str.upper().str.extract(r'^([A-Z]{1,2})0*(\d+)$')
+    return parts[0], pd.to_numeric(parts[1], errors='coerce')
+
+
+def infer_plate_size(wells):
+    """Smallest plate (96, 384 or 1536) containing every well name in `wells`.
+
+    A sparse 384-well plate that only uses A-H / 1-12 reads as 96: pass the size
+    explicitly (the Info sheet's optional Plate_size column) for such plates.
+    """
+    rows, cols = _split_wells(wells)
+    rows, cols = set(rows.dropna()), cols.dropna()
+    for size, (nrows, ncols) in PLATE_GEOMETRY.items():
+        if rows <= set(_row_labels(nrows)) and (cols.empty or cols.max() <= ncols):
+            return size
+    raise ValueError(f"wells don't fit a 1536-well plate: rows {sorted(rows)}, max column {cols.max()}")
+
+
+def _plate_size_from_info(row):
+    """The Info row's optional Plate_size (96/384/1536), or None to infer it from the wells."""
+    value = _series_get_ci(row, 'Plate_size', np.nan)
+    if value is None or (isinstance(value, float) and np.isnan(value)) or str(value).strip() == '':
+        return None
+    size = int(float(value))
+    if size not in PLATE_GEOMETRY:
+        raise ValueError(f"Plate_size must be 96, 384 or 1536; got {value!r} for "
+                         f"{_series_get_ci(row, 'Grid_num', '')}")
+    return size
+
+
+def pad_to_full_plate(dids, size=None):
+    """One row per well of the plate: add the wells `dids` lacks, as empty wells, in plate order.
+
+    The upload protocol tags control wells by reading Sci_PosControl and
+    Sci_NegControl on every well of the plate, so a well missing from the
+    manifest stops the upload ("property 'Sci_PosControl' is undefined"). Empty
+    wells are therefore written out, with NA fields and both flags False, and
+    left for the load step to skip.
+
+    Destination wells are written zero-padded ('A1' -> 'A01'), the HiTS
+    convention the block-grid maps already use.
+
+    Args:
+        dids (DataFrame): manifest rows for ONE destination plate, with
+            'Destination well' and usually 'Destination plate' and 'Assay ID'.
+        size (int, optional): 96, 384 or 1536. Inferred from the wells if None.
+    Returns:
+        DataFrame: the input rows (wells renamed to zero-padded form) plus one
+            empty row per missing well, sorted in plate order; rows whose well
+            can't be placed on the plate keep their place at the end.
+    """
+    dids = dids.copy()
+    rows, cols = _split_wells(dids['Destination well'])
+    ok = rows.notna() & cols.notna()
+    dids.loc[ok.values, 'Destination well'] = (rows[ok] + cols[ok].astype(int).map('{:02d}'.format)).values
+    if size is None:
+        size = infer_plate_size(dids.loc[ok.values, 'Destination well'])
+    every = plate_well_list(size)
+    outside = sorted(set(dids.loc[ok.values, 'Destination well']) - set(every))
+    if outside:
+        raise ValueError(f"wells outside a {size}-well plate: {outside[:10]}")
+
+    missing = [w for w in every if w not in set(dids['Destination well'])]
+    if missing:
+        empty = pd.DataFrame({'Destination well': missing})
+        for col in ('Destination plate', 'Assay ID'):  # constant per plate: carry them over
+            if col in dids.columns and dids[col].nunique(dropna=True) == 1:
+                empty[col] = dids[col].dropna().iloc[0]
+        for flag in ('Sci_PosControl', 'Sci_NegControl'):
+            if flag in dids.columns:
+                empty[flag] = False
+        logger.info(f"Adding {len(missing)} empty well(s) so the manifest covers the whole {size}-well plate.")
+        dids = pd.concat([dids, empty], ignore_index=True)
+
+    order = {w: i for i, w in enumerate(every)}
+    dids['_order'] = dids['Destination well'].map(order).fillna(len(every))
+    return dids.sort_values('_order', kind='stable').drop(columns='_order').reset_index(drop=True)
+
+
 def handle_zero_concentrations(dids):
-    """Drop zero-concentration wells, treating them as empty wells.
+    """Turn zero-concentration wells into empty wells, keeping them in the manifest.
 
     A zero in the concentration column is not loadable: dose-response curves are
     fit on a log scale, so zero has no place on the axis. In practice a zero
-    means the well held no compound, so the well is simply dropped from the
-    manifest, which is how an empty well is represented.
+    means the well held no compound, so the well becomes an empty well: its
+    SMDC_ID, Lot, source and concentration are blanked (written as NA) and both
+    control flags are False. It stays in the manifest, because the upload
+    protocol reads the control flags on every well of the plate; the load step
+    is what skips empty wells.
 
-    This used to prompt on stdin for a replacement value, which is why the
-    pipeline could not run unattended. Pressing Enter or typing NA at that prompt
-    produced exactly this behaviour, and that was the recommended answer, so the
-    prompt is gone and the recommended answer is now the only one.
-
-    If you ever have zeros that genuinely mean "below the lowest dilution"
-    rather than "empty", fix them in the workbook. Do not reintroduce the prompt.
+    This used to prompt on stdin for a replacement value, and later dropped the
+    well. Do not reintroduce either: if you ever have zeros that genuinely mean
+    "below the lowest dilution" rather than "empty", fix them in the workbook.
 
     Args:
         dids (DataFrame): destination wells with a concentration column.
     Returns:
-        DataFrame: with zero-concentration rows removed.
-
-    Call this AFTER the plate row-count check in make_dr_platemaps, so the count
-    is taken on the full plate. Dropping rows first made the check fire a false
-    "was a compound pulled from two plates?" warning on every plate that had any
-    empty wells.
+        DataFrame: the same rows, with zero-concentration compound wells blanked
+            and control wells' concentration blanked.
     """
     # Support both 'conc' and '[compound] uM' column names
     conc_col = '[compound] uM' if '[compound] uM' in dids.columns else 'conc'
@@ -2247,11 +2334,16 @@ def handle_zero_concentrations(dids):
         return dids
 
     logger.info(
-        f"Dropping {n_zero} well(s) with zero concentration; treating them as empty wells."
+        f"{n_zero} well(s) have zero concentration; keeping them as empty wells (NA), "
+        "which the load step skips."
     )
-    dids = dids[~zero_mask]
-    if len(dids) > 0:
-        logger.info(f"Min conc of plate is now {dids[conc_col].min()}")
+    dids = dids.copy()
+    for col in _EMPTY_WELL_BLANK:
+        if col in dids.columns:
+            dids.loc[zero_mask, col] = np.nan
+    for flag in ('Sci_PosControl', 'Sci_NegControl'):
+        if flag in dids.columns:
+            dids.loc[zero_mask, flag] = False
     return dids
 
 

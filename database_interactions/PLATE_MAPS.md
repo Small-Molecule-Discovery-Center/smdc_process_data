@@ -144,6 +144,7 @@ One `.xlsx` file with:
 | `Date_of_screen` | Date the plate was run. Becomes a folder name. |
 | `Raw_data_file` | Path to the instrument output. Typed in by hand; see `_normalize_share_path`. |
 | `Assay_name` | Human-readable name. Becomes part of a folder name. |
+| `Plate_size` | Optional: `96`, `384` or `1536`. Only needed for a sparse `use biomek` sheet whose wells all fit inside a smaller plate (e.g. a 384-well plate using only A-H / 1-12); otherwise the size comes from the wells. |
 
 Column names are matched **case- and punctuation-insensitively**, so `Grid num`,
 `grid_num` and `GridNum` all work. See `_standardize_info_columns` for the exact
@@ -279,21 +280,32 @@ A zero in the concentration column is not loadable: dose-response curves are fit
 on a log scale, so zero has no place on the axis. In practice a zero means the
 well held no compound.
 
-**Zero-concentration wells are dropped from the manifest**, which is how an empty
-well is represented. This happens automatically, with a log line:
+**Every `*_DR_plate.xlsx` lists every well of the plate** (96, 384 or 1536 rows,
+in plate order). Empty wells stay in the manifest as empty wells: `SMDC_ID`,
+`Lot`, `Source plate`, `Source well` and `[compound] uM` are `NA`, and
+`Sci_PosControl` / `Sci_NegControl` are both `False`. An empty well is:
+
+- a cell left blank in block 0 of a grid map;
+- a well that a `use biomek` sheet doesn't list (added by `pad_to_full_plate`);
+- a well with **zero concentration** (`handle_zero_concentrations` blanks it).
+
+They are kept, not dropped, because the HiTS upload protocol tags control wells by
+reading `Sci_PosControl` / `Sci_NegControl` on every well of the plate. A well
+missing from the manifest stops the upload with *"property 'Sci_PosControl' is
+undefined"*. **The load step is what skips empty wells**, so they never reach the
+database.
+
+Zero concentrations are logged:
 
 ```
-INFO: Dropping 16 well(s) with zero concentration; treating them as empty wells.
+INFO: 16 well(s) have zero concentration; keeping them as empty wells (NA), which the load step skips.
 ```
 
 Nothing is asked of you. An earlier version prompted on stdin for a replacement
-value; pressing Enter or typing `NA` produced exactly this behaviour and was the
-recommended answer, so the prompt is gone and the recommended answer is now the
-only one.
+value, and a later one dropped the well; do not reintroduce either.
 
-The drop happens **after** the plate row-count check, so the count still sees the
-full plate. If you see the "Was a compound pulled from two plates?" warning, it is
-about a genuine fan-out, not about your empty wells.
+If you see the "Was a compound pulled from two plates?" warning, a destination well
+appears more than once in the manifest: a genuine fan-out, not your empty wells.
 
 If you ever have zeros that genuinely mean "below the lowest dilution" rather than
 "empty", fix them in the workbook. Do not reintroduce the prompt.
@@ -359,6 +371,7 @@ the paths from it.
 | Function | Purpose |
 |---|---|
 | `plate_well_list(size)` | `['A01', 'A02', ... 'P24']` for a given plate format. |
+| `pad_to_full_plate(dids, size)` | Add every well a one-plate manifest lacks, as an empty well, in plate order. Size inferred from the wells if not given. |
 | `assign_wells_by_idx(df, ...)` | Map a within-plate index column onto well names, optionally reserving control columns. |
 | `read_platemap_block(plate_map, block, value_name, size)` | Read one grid block out of a sheet into long form. This is the parser for the block convention. |
 | `lookup_id_and_lot_by_plate_and_well(plates, wells)` | Most trustworthy lookup: plate + well identifies exactly one physical well. |
@@ -408,7 +421,8 @@ It stubs `mysql_cnx` (and, if absent, `humanize` / `seaborn`), then checks:
   root.
 - `_assay_dir_name` gives the same answer for `123`, `123.0`, `'123'` and
   `'123.0'`, the spellings that used to break clean-up.
-- `handle_zero_concentrations` drops zeros without prompting.
+- `handle_zero_concentrations` keeps zero-concentration wells as empty wells, without prompting.
+- `pad_to_full_plate` / `make_dr_platemaps` write one row per well of the plate, empty wells with `NA` and both control flags `False`.
 - `read_platemap_block` rejects an unknown plate size with a clear error.
 
 Everything else needs a live HiTS connection and is untested. The database-facing
@@ -468,8 +482,9 @@ past, so a missing file stops the run instead of producing a silently empty
 folder.
 
 **"Your plate has N wells. Was a compound pulled from two plates?"**
-A merge fanned out, usually because a compound was found on more than one listed
-source plate. This is no longer triggered by empty wells.
+A destination well appears more than once: a merge fanned out, usually because a
+compound was found on more than one listed source plate. Empty wells don't trigger it;
+they are written once each, with `NA`.
 
 **`clean_up_folders` says "No such folder, skipping"**
 It looked for a `toload_<i>` that does not exist. Confirm you passed the same
@@ -493,7 +508,7 @@ Recorded so you know what changed if you compare against an older copy.
 | **Pipeline and clean-up disagreed on folders** | They computed the assay folder name and the `toload_<i>` index by different rules, so clean-up could fail to find folders that existed. Both now go through `_read_info_sheet`, `_iter_load_groups` and `_assay_dir_name`. |
 | **Shell-outs** | `os.system("rm {path}")` with an *unquoted* path, and `os.system("cp '{path}'")` whose return code was ignored. Now `os.remove` and `shutil.copy2`: no shell, and failures raise. |
 | **Positional column rename** | `df.columns = [...]` in `get_source_plate_info` silently mislabelled everything if the `SELECT` order changed. Now a dict rename with an explicit check that raises and names the missing column. |
-| **Interactive prompt** | `handle_zero_concentrations` called `input()`. Now drops zeros as empty wells, and runs after the row-count check so that check stays meaningful. |
+| **Interactive prompt** | `handle_zero_concentrations` called `input()`. Now keeps zeros as empty wells (`NA`, both control flags `False`); the load step skips them. |
 | **Copy duration** | Logged `start - end`, a negative number. Now `end - start`. |
 | **`basicConfig(force=True)`** | Tore out whatever logging the host had configured. Now `basicConfig(level=INFO)` plus an explicit `setLevel`, which makes this module's output visible without stomping anyone else's handlers. |
 | **`Montreal/Shared/` path branch** | Sliced `[17:]` against a 16-character prefix, eating the next character (`SMDC/run.txt` → `MDC/run.txt`), so any path arriving in that form could never resolve. Now `[16:]`. `test_plate_maps.py` asserts every branch strips exactly its own prefix length. |

@@ -584,8 +584,56 @@ def test_zero_conc_control_wells_are_kept():
                          'Sci_PosControl': [False, True, False, False],
                          'Sci_NegControl': [False, False, True, False]})
     out = pm.handle_zero_concentrations(dids)
-    assert out['Destination well'].tolist() == ['A01', 'J01', 'K01']   # only the truly empty well goes
-    assert out['[compound] uM'].isna().tolist() == [False, True, True]  # controls have no conc
+    assert out['Destination well'].tolist() == ['A01', 'J01', 'K01', 'L01']   # every well stays
+    assert out['[compound] uM'].isna().tolist() == [False, True, True, True]  # controls and empties: no conc
+    assert out.Sci_PosControl.tolist() == [False, True, False, False]         # flags kept on controls
+    assert out.Sci_NegControl.tolist() == [False, False, True, False]
+
+
+def test_zero_conc_compound_well_becomes_empty_well():
+    dids = pd.DataFrame({'SMDC_ID': [101.0, 102.0], 'Lot': [1.0, 1.0], 'Source plate': ['P1', 'P1'],
+                         'Source well': ['A01', 'A02'], 'Destination well': ['A01', 'A02'],
+                         '[compound] uM': [10.0, 0.0],
+                         'Sci_PosControl': [False, False], 'Sci_NegControl': [False, False]})
+    out = pm.handle_zero_concentrations(dids)
+    empty = out.iloc[1]
+    assert empty['Destination well'] == 'A02'
+    assert all(pd.isna(empty[c]) for c in ['SMDC_ID', 'Lot', 'Source plate', 'Source well', '[compound] uM'])
+    assert not empty.Sci_PosControl and not empty.Sci_NegControl
+    assert out.iloc[0].SMDC_ID == 101.0  # the compound well is untouched
+
+
+def test_pad_to_full_plate_adds_missing_wells_as_empty():
+    dids = pd.DataFrame({'SMDC_ID': [101.0, np.nan], 'Lot': [1.0, np.nan],
+                         'Destination plate': ['P1', 'P1'], 'Destination well': ['A3', 'B01'],
+                         '[compound] uM': [10.0, np.nan], 'Assay ID': [2741, 2741],
+                         'Sci_PosControl': [False, True], 'Sci_NegControl': [False, False]})
+    out = pm.pad_to_full_plate(dids)
+    assert len(out) == 96 and out['Destination well'].tolist() == pm.plate_well_list(96)
+    assert out.loc[out['Destination well'] == 'A03', 'SMDC_ID'].item() == 101.0  # 'A3' zero-padded
+    assert out.loc[out['Destination well'] == 'B01', 'Sci_PosControl'].item()
+    added = out[~out['Destination well'].isin(['A03', 'B01'])]
+    assert added.SMDC_ID.isna().all() and added['[compound] uM'].isna().all()
+    assert (~added.Sci_PosControl.astype(bool)).all() and (~added.Sci_NegControl.astype(bool)).all()
+    assert (added['Destination plate'] == 'P1').all() and (added['Assay ID'] == 2741).all()
+
+
+def test_pad_to_full_plate_size():
+    one_well = pd.DataFrame({'Destination well': ['A01']})
+    assert len(pm.pad_to_full_plate(one_well)) == 96            # inferred: fits a 96-well plate
+    assert len(pm.pad_to_full_plate(one_well, size=384)) == 384  # Plate_size overrides the guess
+    assert len(pm.pad_to_full_plate(pd.DataFrame({'Destination well': ['P24']}))) == 384
+    full = pd.DataFrame({'Destination well': pm.plate_well_list(384)})
+    assert len(pm.pad_to_full_plate(full)) == 384                # a full plate is unchanged
+    with pytest.raises(ValueError, match='outside a 96-well plate'):
+        pm.pad_to_full_plate(pd.DataFrame({'Destination well': ['P24']}), size=96)
+
+
+def test_plate_size_from_info():
+    assert pm._plate_size_from_info(pd.Series({'Grid_num': 'X'})) is None
+    assert pm._plate_size_from_info(pd.Series({'Plate size': 384.0})) == 384
+    with pytest.raises(ValueError, match='Plate_size'):
+        pm._plate_size_from_info(pd.Series({'Plate_size': 100, 'Grid_num': 'X'}))
 
 
 def test_concentrations_that_print_the_same_become_equal():
@@ -801,3 +849,33 @@ def test_clean_up_still_refuses_an_xlsx_whose_cells_differ(tmp_path, monkeypatch
     with pytest.raises(FileExistsError, match='P1_DR_plate.xlsx'):
         pm.clean_up_folders('info.xlsx', basedir=str(tmp_path))
     assert (assay / 'toload_0' / '20260101' / 'P1_DR_plate.xlsx').exists()
+
+
+def _biomek_manifest(monkeypatch, info_extra=None):
+    """make_dr_platemaps on a 3-well Biomek sheet, with the database calls stubbed out."""
+    monkeypatch.setattr(pm, '_connect', lambda: None)
+    monkeypatch.setattr(pm, 'get_lot_info', lambda row, dids, maps, users, rv: dids)
+    sheet = pd.DataFrame({'SMDC ID': [101, 102, 103], 'Lot': [1, 1, 2],
+                          'Source Plate': ['SRC1', 'SRC1', 'SRC1'], 'Source Well': ['A01', 'A02', 'A03'],
+                          'Destination Plate': ['DEST1'] * 3, 'Destination Well': ['A1', 'B2', 'C3'],
+                          'Concentration': [10.0, 0.0, 1.0]})
+    row = pd.Series({'Grid_num': 'DEST1', 'Source_plate': 'use biomek', 'Raw_assay_ID': 2741,
+                     'Date_of_screen': 20260101, **(info_extra or {})})
+    return pm.make_dr_platemaps({'DEST1': sheet}, row, users=[])
+
+
+def test_make_dr_platemaps_writes_every_well(monkeypatch):
+    out = _biomek_manifest(monkeypatch)
+    assert out['Destination well'].tolist() == pm.plate_well_list(96)   # whole plate, plate order
+    assert set(out.Sci_PosControl) == {False} and set(out.Sci_NegControl) == {False}
+    a01 = out.set_index('Destination well').loc['A01']
+    assert a01.SMDC_ID == 101 and a01['[compound] uM'] == 10.0
+    b02 = out.set_index('Destination well').loc['B02']                    # zero conc -> empty well
+    assert b02.SMDC_ID == 'NA' and b02['[compound] uM'] == 'NA'
+    empty = out.set_index('Destination well').loc['H12']                  # never listed -> empty well
+    assert empty.SMDC_ID == 'NA' and empty['Assay ID'] == 2741 and empty['Destination plate'] == 'DEST1'
+
+
+def test_make_dr_platemaps_plate_size_from_info(monkeypatch):
+    out = _biomek_manifest(monkeypatch, {'Plate_size': 384})
+    assert len(out) == 384 and out['Destination well'].iloc[-1] == 'P24'
